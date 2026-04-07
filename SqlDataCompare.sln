@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SqlDataCompare.Tests", "Sql
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SqlDataCompare.Mcp", "SqlDataCompare.Mcp\SqlDataCompare.Mcp.csproj", "{50EDF9D0-61F0-416C-A212-1F795420DBC8}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SqlDataCompare.Mcp.IntegrationTests", "SqlDataCompare.Mcp.IntegrationTests\SqlDataCompare.Mcp.IntegrationTests.csproj", "{53984555-13CE-4C41-ADBC-CB2EE3A54507}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -83,6 +85,18 @@ Global
 		{50EDF9D0-61F0-416C-A212-1F795420DBC8}.Release|x64.Build.0 = Release|Any CPU
 		{50EDF9D0-61F0-416C-A212-1F795420DBC8}.Release|x86.ActiveCfg = Release|Any CPU
 		{50EDF9D0-61F0-416C-A212-1F795420DBC8}.Release|x86.Build.0 = Release|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Debug|x64.Build.0 = Debug|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Debug|x86.Build.0 = Debug|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Release|Any CPU.Build.0 = Release|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Release|x64.ActiveCfg = Release|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Release|x64.Build.0 = Release|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Release|x86.ActiveCfg = Release|Any CPU
+		{53984555-13CE-4C41-ADBC-CB2EE3A54507}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

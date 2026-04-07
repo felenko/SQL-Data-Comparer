@@ -74,4 +74,29 @@ public class ProjectSerializationTests
             try { File.Delete(path); } catch { /* ignore */ }
         }
     }
+
+    [Fact]
+    public void Parse_matches_roundtrip_json()
+    {
+        var p = new CompareProject
+        {
+            Name = "parse-test",
+            Source = new DatabaseEndpoint { ConnectionString = "s" },
+            Destination = new DatabaseEndpoint { ConnectionString = "d" },
+        };
+        var path = Path.Combine(Path.GetTempPath(), "sdc-parse-" + Guid.NewGuid() + ".json");
+        try
+        {
+            CompareProjectSerializer.Write(path, p);
+            var json = File.ReadAllText(path);
+            var back = CompareProjectSerializer.Parse(json);
+            Assert.Equal("parse-test", back.Name);
+            Assert.Equal("s", ((DatabaseEndpoint)back.Source).ConnectionString);
+            Assert.Equal("d", ((DatabaseEndpoint)back.Destination).ConnectionString);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { /* ignore */ }
+        }
+    }
 }

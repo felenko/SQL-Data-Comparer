@@ -1,7 +1,9 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using SqlDataCompare.Compare;
 using SqlDataCompare.Project;
 using SqlDataCompare.Reporting;
+using SqlDataCompare.Sync;
 
 static void WriteUsage()
 {
@@ -11,7 +13,10 @@ static void WriteUsage()
         Usage:
           SqlDataCompare.Cli --project <path> [--report <json>] [--export-html <path>] [--export-csv <path>] [--export-junit <path>] [--verbosity Information|Warning|...]
 
-        Exit codes: 0 identical, 1 error, 2 differences detected.
+        Copy differences (writes DESTINATION only; runs compare first, then syncs all tables in the project):
+          --copy-differences [--sync-report <json>] [--sync-delete-extra] [--sync-no-insert-missing] [--sync-no-update-changed] [--disable-fk-checks]
+
+        Exit codes: 0 success (or identical when not copying); 1 error; 2 differences detected (compare-only mode).
         """);
 }
 
@@ -45,6 +50,9 @@ string? reportJson = null;
 string? html = null;
 string? csv = null;
 string? junit = null;
+string? syncReportJson = null;
+var copyDifferences = false;
+var syncOptions = new SyncOptions();
 LogLevel verbosity = LogLevel.Information;
 
 for (var i = 0; i < args.Length; i++)
@@ -60,6 +68,18 @@ for (var i = 0; i < args.Length; i++)
         csv = args[++i];
     else if (a.Equals("--export-junit", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
         junit = args[++i];
+    else if (a.Equals("--sync-report", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+        syncReportJson = args[++i];
+    else if (a.Equals("--copy-differences", StringComparison.OrdinalIgnoreCase))
+        copyDifferences = true;
+    else if (a.Equals("--sync-delete-extra", StringComparison.OrdinalIgnoreCase))
+        syncOptions.DeleteExtra = true;
+    else if (a.Equals("--sync-no-insert-missing", StringComparison.OrdinalIgnoreCase))
+        syncOptions.InsertMissing = false;
+    else if (a.Equals("--sync-no-update-changed", StringComparison.OrdinalIgnoreCase))
+        syncOptions.UpdateChanged = false;
+    else if (a.Equals("--disable-fk-checks", StringComparison.OrdinalIgnoreCase))
+        syncOptions.DisableForeignKeyChecks = true;
     else if ((a.Equals("--verbosity", StringComparison.OrdinalIgnoreCase) || a.Equals("-v", StringComparison.OrdinalIgnoreCase)) &&
              i + 1 < args.Length)
         verbosity = ParseLogLevel(args[++i]);
@@ -69,6 +89,21 @@ if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
 {
     Console.Error.WriteLine("Provide a valid --project path to a JSON project file.");
     WriteUsage();
+    return 1;
+}
+
+if (syncReportJson is not null && !copyDifferences)
+{
+    Console.Error.WriteLine("--sync-report requires --copy-differences.");
+    WriteUsage();
+    return 1;
+}
+
+if (copyDifferences &&
+    !syncOptions.InsertMissing && !syncOptions.UpdateChanged && !syncOptions.DeleteExtra)
+{
+    Console.Error.WriteLine(
+        "When using --copy-differences, enable at least one of: inserts (default on), updates (default on), or --sync-delete-extra.");
     return 1;
 }
 
@@ -124,6 +159,53 @@ try
 
     if (result.Tables.Any(t => t.Status == TableCompareStatus.Error))
         return 1;
+
+    if (copyDifferences)
+    {
+        if (project.Destination is not DatabaseEndpoint)
+        {
+            logger.LogError("--copy-differences requires a database destination in the project (not an INSERT folder).");
+            return 1;
+        }
+
+        if (result.AllIdentical)
+        {
+            logger.LogInformation("Compare reported all tables identical; skipping sync.");
+            return 0;
+        }
+
+        logger.LogWarning(
+            "Applying sync to DESTINATION: insertMissing={Ins}, updateChanged={Upd}, deleteExtra={Del}, disableFkChecks={Fk}",
+            syncOptions.InsertMissing, syncOptions.UpdateChanged, syncOptions.DeleteExtra,
+            syncOptions.DisableForeignKeyChecks);
+
+        syncOptions.Selection = null;
+        var syncSvc = new DataSyncService();
+        var syncResult = await syncSvc.RunAsync(project, syncOptions, logger, CancellationToken.None);
+
+        if (syncReportJson is not null)
+        {
+            var syncJson = JsonSerializer.Serialize(syncResult, CompareProjectSerializer.JsonOptions);
+            File.WriteAllText(syncReportJson, syncJson);
+        }
+
+        foreach (var t in syncResult.Tables)
+        {
+            if (t.Status == SyncStatus.Success)
+                logger.LogInformation(
+                    "SYNC OK {Src} → {Dst}: inserted={I}, updated={U}, deleted={D}",
+                    t.SourceTable, t.DestinationTable, t.Inserted, t.Updated, t.Deleted);
+            else if (t.Status == SyncStatus.Skipped)
+                logger.LogWarning("SYNC SKIP {Src} → {Dst}: {Msg}", t.SourceTable, t.DestinationTable, t.ErrorMessage);
+            else
+                logger.LogError("SYNC ERR {Src} → {Dst}: {Msg}", t.SourceTable, t.DestinationTable, t.ErrorMessage);
+        }
+
+        if (syncResult.Tables.Any(t => t.Status == SyncStatus.Error))
+            return 1;
+        return 0;
+    }
+
     if (result.Tables.Any(t => t.Status is TableCompareStatus.Different or TableCompareStatus.SampledDifferent))
         return 2;
     return 0;

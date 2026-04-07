@@ -93,6 +93,10 @@ public partial class MainViewModel : ObservableObject
         "Configure source (read-only) and destination, add tables to compare or discover them, then save or run.";
 
     [ObservableProperty] private bool isBusy;
+    [ObservableProperty] private bool isSyncing;
+    [ObservableProperty] private bool isComparing;
+    [ObservableProperty] private string progressTablesText = "";
+    [ObservableProperty] private string progressRowsText = "";
 
     /// <summary>Determinate compare progress 0–100; meaningful while compare is running.</summary>
     [ObservableProperty] private double compareProgressPercent;
@@ -574,6 +578,9 @@ public partial class MainViewModel : ObservableObject
         _compareCts = new CancellationTokenSource();
         CancelCompareCommand.NotifyCanExecuteChanged();
         IsBusy = true;
+        IsComparing = true;
+        ProgressTablesText = "";
+        ProgressRowsText = "";
         CompareProgressIndeterminate = true;
         CompareProgressPercent = 0;
         CompareTimingText = "";
@@ -612,6 +619,9 @@ public partial class MainViewModel : ObservableObject
             _compareCts?.Dispose();
             _compareCts = null;
             CancelCompareCommand.NotifyCanExecuteChanged();
+            IsComparing = false;
+            ProgressTablesText = "";
+            ProgressRowsText = "";
             IsBusy = false;
             CompareProgressIndeterminate = false;
             CompareProgressPercent = 0;
@@ -668,6 +678,11 @@ public partial class MainViewModel : ObservableObject
         {
             StatusMessage = "No tables to compare.";
         }
+
+        ProgressTablesText = p.TotalTables > 0 ? $"{p.CompletedTables} / {p.TotalTables} tables" : "";
+        ProgressRowsText = rowTotal is > 0 && rowCompared is { } rcProgress
+            ? $"{rcProgress:N0} / {rowTotal:N0} rows"
+            : "";
     }
 
     private static string FormatShortTime(TimeSpan t)
@@ -733,6 +748,9 @@ public partial class MainViewModel : ObservableObject
         }
 
         IsBusy = true;
+        IsSyncing = true;
+        ProgressTablesText = "";
+        ProgressRowsText = "";
         CompareProgressIndeterminate = true;
         CompareProgressPercent = 0;
         CompareTimingText = "";
@@ -780,6 +798,9 @@ public partial class MainViewModel : ObservableObject
             CompareProgressIndeterminate = false;
             CompareProgressPercent = 0;
             CompareTimingText = "";
+            ProgressTablesText = "";
+            ProgressRowsText = "";
+            IsSyncing = false;
             IsBusy = false;
         }
     }
@@ -794,6 +815,8 @@ public partial class MainViewModel : ObservableObject
             case SyncProgressPhase.Started:
                 CompareProgressIndeterminate = p.TablesTotal == 0;
                 CompareProgressPercent = 0;
+                ProgressTablesText = p.TablesTotal > 0 ? $"0 / {p.TablesTotal} tables" : "";
+                ProgressRowsText = "";
                 StatusMessage = p.TablesTotal == 0
                     ? "Sync: no tables in worklist."
                     : $"Sync: {p.TablesTotal} table(s) to process…";
@@ -804,12 +827,15 @@ public partial class MainViewModel : ObservableObject
                 CompareProgressPercent = p.TablesTotal > 0
                     ? Math.Min(99, (p.TableIndex - 1) * 100.0 / p.TablesTotal)
                     : 0;
+                ProgressTablesText = p.TablesTotal > 0 ? $"{p.TableIndex} / {p.TablesTotal} tables" : "";
+                ProgressRowsText = "";
                 StatusMessage =
                     $"Sync {p.TableIndex}/{Math.Max(1, p.TablesTotal)}: {p.SourceTable} → {p.DestinationTable} — preparing…";
                 break;
 
             case SyncProgressPhase.LoadingRows:
                 CompareProgressIndeterminate = true;
+                ProgressRowsText = "loading rows…";
                 StatusMessage =
                     $"Sync {p.TableIndex}/{Math.Max(1, p.TablesTotal)}: {p.SourceTable} — reading rows from source & destination…";
                 break;
@@ -824,6 +850,9 @@ public partial class MainViewModel : ObservableObject
                 var stmtLabel = p.TotalStatements > 0
                     ? $"command {p.CompletedStatements}/{p.TotalStatements}"
                     : "no SQL commands";
+                ProgressRowsText = p.TotalStatements > 0
+                    ? $"{p.CompletedStatements} / {p.TotalStatements} SQL cmds"
+                    : "";
                 StatusMessage =
                     $"Sync {p.TableIndex}/{Math.Max(1, p.TablesTotal)}: {p.SourceTable} — applying ({stmtLabel})…";
                 break;
@@ -831,6 +860,8 @@ public partial class MainViewModel : ObservableObject
             case SyncProgressPhase.TableCompleted:
                 if (p.TablesTotal > 0)
                     CompareProgressPercent = Math.Min(100, p.TableIndex * 100.0 / p.TablesTotal);
+                ProgressTablesText = p.TablesTotal > 0 ? $"{p.TableIndex} / {p.TablesTotal} tables" : "";
+                ProgressRowsText = "";
                 break;
 
             case SyncProgressPhase.Finished:

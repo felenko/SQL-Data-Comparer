@@ -16,8 +16,15 @@ public static class CompareProjectSerializer
     public static CompareProject Read(string path)
     {
         var json = File.ReadAllText(path);
+        return Parse(json);
+    }
+
+    /// <summary>Deserialize a compare project from JSON (same shape as a saved project file).</summary>
+    public static CompareProject Parse(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
         return JsonSerializer.Deserialize<CompareProject>(json, JsonOptions)
-               ?? throw new InvalidOperationException("Project file was empty or invalid.");
+               ?? throw new InvalidOperationException("Project JSON was empty or invalid.");
     }
 
     public static void Write(string path, CompareProject project)
