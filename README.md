@@ -1,4 +1,4 @@
-# SQL Data Comparer
+# MCP SQL Data Comparer
 
 Compare row-level data between two **SQL Server**, **PostgreSQL**, or **MySQL** databases, or between **folders of `INSERT` scripts**, from a **WPF desktop app** or a **command-line** runner. Optional reporting to JSON, HTML, CSV, and JUnit-style XML.
 
