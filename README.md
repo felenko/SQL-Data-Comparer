@@ -1,4 +1,4 @@
-# SQL Data Comparer
+# MCP SQL Data Comparer
 
 Compare row-level data between two **SQL Server**, **PostgreSQL**, or **MySQL** databases, or between **folders of `INSERT` scripts**, from a **WPF desktop app** or a **command-line** runner. **This implementation ships with a built-in [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server**—wire it into Cursor, Claude Desktop, or any MCP-capable client to enumerate schemas, read related rows, diff tables, and run targeted syncs from natural-language workflows. Optional reporting to JSON, HTML, CSV, and JUnit-style XML.
 
