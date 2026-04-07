@@ -13,22 +13,38 @@ public static class RowMergeComparer
         bool sampledBecauseLimited,
         string sourceDisplay,
         string destDisplay,
-        KeyResolutionSummary? keySummary)
+        KeyResolutionSummary? keySummary,
+        IProgress<(int Compared, int Total)>? mergeProgress = null,
+        CancellationToken cancellationToken = default)
     {
         if (keyColumnsSource.Count != keyColumnsDestination.Count)
             throw new InvalidOperationException("Source and destination key column counts must match.");
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         var sortKeysSrc = keyColumnsSource.ToList();
         var sortKeysDst = keyColumnsDestination.ToList();
-        var srcSorted = sourceRows.OrderBy(r => KeyString(r, sortKeysSrc), StringComparer.Ordinal).ToList();
-        var dstSorted = destinationRows.OrderBy(r => KeyString(r, sortKeysDst), StringComparer.Ordinal).ToList();
+        // Rows usually arrive already ordered (SELECT … ORDER BY keys). Re-sorting is O(n log n) × 2 and dominates large tables.
+        // If the stream is already non-decreasing by KeyString (Ordinal), skip sorting.
+        var srcSorted = EnsureSortedByKeyString(sourceRows, sortKeysSrc, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var dstSorted = EnsureSortedByKeyString(destinationRows, sortKeysDst, cancellationToken);
+
+        var mergeTotal = sourceRows.Count + destinationRows.Count;
+        mergeProgress?.Report((0, mergeTotal));
 
         long onlySrc = 0, onlyDst = 0, valueDiffs = 0;
         var sample = new List<RowDifference>();
         var i = 0;
         var j = 0;
+        var steps = 0;
         while (i < srcSorted.Count && j < dstSorted.Count)
         {
+            if ((++steps & 0x1FFF) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                mergeProgress?.Report((i + j, mergeTotal));
+            }
             var ks = KeyString(srcSorted[i], sortKeysSrc);
             var kd = KeyString(dstSorted[j], sortKeysDst);
             var cmp = string.CompareOrdinal(ks, kd);
@@ -83,6 +99,11 @@ public static class RowMergeComparer
 
         while (i < srcSorted.Count)
         {
+            if ((++steps & 0x1FFF) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                mergeProgress?.Report((i + j, mergeTotal));
+            }
             onlySrc++;
             AddSample(RowDifferenceKind.MissingInDestination, KeyString(srcSorted[i], sortKeysSrc), null, ref sample,
                 maxReportedDiffs);
@@ -91,11 +112,18 @@ public static class RowMergeComparer
 
         while (j < dstSorted.Count)
         {
+            if ((++steps & 0x1FFF) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                mergeProgress?.Report((i + j, mergeTotal));
+            }
             onlyDst++;
             AddSample(RowDifferenceKind.MissingInSource, KeyString(dstSorted[j], sortKeysDst), null, ref sample,
                 maxReportedDiffs);
             j++;
         }
+
+        mergeProgress?.Report((i + j, mergeTotal));
 
         var different = onlySrc > 0 || onlyDst > 0 || valueDiffs > 0;
         var status = !different
@@ -116,6 +144,32 @@ public static class RowMergeComparer
             SampleDiffs = sample,
             Keys = keySummary,
         };
+    }
+
+    /// <summary>
+    /// Returns a list sorted by <see cref="KeyString"/> using <see cref="StringComparer.Ordinal"/>.
+    /// When input is already in that order (typical after SQL ORDER BY on key columns), avoids O(n log n) sort.
+    /// </summary>
+    internal static List<Dictionary<string, object?>> EnsureSortedByKeyString(
+        IReadOnlyList<Dictionary<string, object?>> rows,
+        IReadOnlyList<string> keys,
+        CancellationToken cancellationToken)
+    {
+        if (rows.Count <= 1)
+            return rows is List<Dictionary<string, object?>> l0 ? l0 : rows.ToList();
+
+        string? prev = null;
+        for (var i = 0; i < rows.Count; i++)
+        {
+            if ((i & 0x1FFF) == 0)
+                cancellationToken.ThrowIfCancellationRequested();
+            var k = KeyString(rows[i], keys);
+            if (prev is not null && string.CompareOrdinal(prev, k) > 0)
+                return rows.OrderBy(r => KeyString(r, keys), StringComparer.Ordinal).ToList();
+            prev = k;
+        }
+
+        return rows is List<Dictionary<string, object?>> l ? l : rows.ToList();
     }
 
     private static void AddSample(

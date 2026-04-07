@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using SqlDataCompare.DataSources;
 using SqlDataCompare.Project;
@@ -31,51 +32,98 @@ public sealed class DataCompareService
         await using var sourceSide = CompareSide.Create(project.Source, project.Options, isSource: true);
         await using var destSide = CompareSide.Create(project.Destination, project.Options, isSource: false);
 
-        IReadOnlyList<TableRef> sourceTables;
         try
         {
-            sourceTables = await sourceSide.ListTablesAsync(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException(
-                $"Source endpoint failed while listing tables (check connection string and login). {ex.Message}", ex);
-        }
+            IReadOnlyList<TableRef> sourceTables;
+            try
+            {
+                sourceTables = await sourceSide.ListTablesAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new InvalidOperationException(
+                    $"Source endpoint failed while listing tables (check connection string and login). {ex.Message}", ex);
+            }
 
-        IReadOnlyList<TableRef> destTables;
-        try
-        {
-            destTables = await destSide.ListTablesAsync(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException(
-                $"Destination endpoint failed while listing tables (check connection string and login). {ex.Message}", ex);
-        }
-        var destSet = destTables.ToHashSet(TableRefComparer.Instance);
+            IReadOnlyList<TableRef> destTables;
+            try
+            {
+                destTables = await destSide.ListTablesAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new InvalidOperationException(
+                    $"Destination endpoint failed while listing tables (check connection string and login). {ex.Message}", ex);
+            }
 
-        var overrideIndex = BuildOverrideIndex(project.TableOverrides, nameComparer);
+            var destSet = destTables.ToHashSet(TableRefComparer.Instance);
 
-        var work = BuildWorklist(project, sourceTables, nameComparer, results);
+            var overrideIndex = BuildOverrideIndex(project.TableOverrides, nameComparer);
 
-        var totalExpected = results.Count + work.Count;
-        progress?.Report(new CompareProgressInfo
-        {
-            CompletedTables = 0,
-            TotalTables = totalExpected,
-            LatestTable = null,
-        });
+            var work = BuildWorklist(project, sourceTables, nameComparer, results);
 
-        for (var i = 0; i < results.Count; i++)
-        {
+            var totalExpected = results.Count + work.Count;
             progress?.Report(new CompareProgressInfo
             {
-                CompletedTables = i + 1,
+                CompletedTables = 0,
                 TotalTables = totalExpected,
-                LatestTable = results[i],
+                LatestTable = null,
             });
-        }
 
+            for (var i = 0; i < results.Count; i++)
+            {
+                progress?.Report(new CompareProgressInfo
+                {
+                    CompletedTables = i + 1,
+                    TotalTables = totalExpected,
+                    LatestTable = results[i],
+                });
+            }
+
+            return await RunCompareWorkAsync(
+                project,
+                logger,
+                sourceSide,
+                destSide,
+                destSet,
+                overrideIndex,
+                work,
+                results,
+                totalExpected,
+                nameComparer,
+                valueComparer,
+                maxDiffs,
+                cancellationToken,
+                progress);
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogInformation("Compare stopped; returning {Count} completed table result(s).", results.Count);
+            return new ProjectCompareResult
+            {
+                ProjectName = project.Name ?? "CompareProject",
+                Tables = results,
+                Cancelled = true,
+            };
+        }
+    }
+
+    private static async Task<ProjectCompareResult> RunCompareWorkAsync(
+        CompareProject project,
+        ILogger logger,
+        CompareSide sourceSide,
+        CompareSide destSide,
+        HashSet<TableRef> destSet,
+        Dictionary<string, TableOverride> overrideIndex,
+        List<(TableRef Src, TablePairSelection? Sel)> work,
+        List<TablePairCompareResult> results,
+        int totalExpected,
+        StringComparer nameComparer,
+        ValueComparer valueComparer,
+        int maxDiffs,
+        CancellationToken cancellationToken,
+        IProgress<CompareProgressInfo>? progress)
+    {
         logger.LogInformation("Comparing {Count} table pair(s).", work.Count);
 
         var tableOrdinal = 0;
@@ -85,6 +133,25 @@ public sealed class DataCompareService
             cancellationToken.ThrowIfCancellationRequested();
             logger.LogInformation("[{Current}/{Total}] {Src}", tableOrdinal, work.Count, srcTable.Display);
             var ov = FindOverride(overrideIndex, srcTable);
+            if (ov?.SkipCompare == true)
+            {
+                var setupSkip = new TablePairCompareResult
+                {
+                    SourceTable = srcTable.Display,
+                    DestinationTable = "(skipped)",
+                    Status = TableCompareStatus.Skipped,
+                    ErrorMessage = "Skipped at setup (table override).",
+                };
+                results.Add(setupSkip);
+                progress?.Report(new CompareProgressInfo
+                {
+                    CompletedTables = results.Count,
+                    TotalTables = totalExpected,
+                    LatestTable = setupSkip,
+                });
+                continue;
+            }
+
             var dstTable = ResolveDestTable(srcTable, ov, sel, destSet, nameComparer);
             if (dstTable is null)
             {
@@ -222,7 +289,8 @@ public sealed class DataCompareService
                 continue;
             }
 
-            var valuePairs = BuildValueColumnPairs(srcSchema, dstSchema, ov, keys.KeyColumns, nameComparer);
+            var valuePairs = CompareColumnPairBuilder.BuildValueColumnPairs(
+                srcSchema, dstSchema, ov, keys.KeyColumns, nameComparer, project.Options.SkipBinaryColumnsInCompare);
             if (valuePairs.Count == 0)
             {
                 logger.LogWarning("No comparable value columns for {Src}->{Dst}", srcTable.Display, dstTable.Value.Display);
@@ -244,15 +312,20 @@ public sealed class DataCompareService
                     .Distinct(StringComparer.Ordinal).ToList();
                 var dstProject = destKeyColumns.Concat(valuePairs.Select(p => p.DestinationColumn))
                     .Distinct(StringComparer.Ordinal).ToList();
-                srcRows = await sourceSide.LoadRowsAsync(srcTable, ov, srcProject, keys.KeyColumns, where, maxRows,
+                var loadSw = Stopwatch.StartNew();
+                var srcTask = sourceSide.LoadRowsAsync(srcTable, ov, srcProject, keys.KeyColumns, where, maxRows,
                     cancellationToken);
-                dstRows = await destSide.LoadRowsAsync(dstTable.Value, ov, dstProject, destKeyColumns, destWhere,
+                var dstTask = destSide.LoadRowsAsync(dstTable.Value, ov, dstProject, destKeyColumns, destWhere,
                     maxRows, cancellationToken);
+                await Task.WhenAll(srcTask, dstTask);
+                srcRows = await srcTask;
+                dstRows = await dstTask;
+                loadSw.Stop();
                 logger.LogInformation(
-                    "[{Current}/{Total}] Loaded rows for {Src}: source={SrcN}, destination={DstN}; merging…",
-                    tableOrdinal, work.Count, srcTable.Display, srcRows.Count, dstRows.Count);
+                    "[{Current}/{Total}] Loaded rows for {Src}: source={SrcN}, destination={DstN} in {LoadMs}ms; merging…",
+                    tableOrdinal, work.Count, srcTable.Display, srcRows.Count, dstRows.Count, loadSw.ElapsedMilliseconds);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 logger.LogError(ex, "Failed reading rows for {Table}", srcTable.Display);
                 var readErr = new TablePairCompareResult
@@ -280,6 +353,22 @@ public sealed class DataCompareService
                 Detail = keys.Detail,
             };
 
+            IProgress<(int Compared, int Total)>? mergeProgress = null;
+            if (progress is not null)
+            {
+                mergeProgress = new Progress<(int Compared, int Total)>(v =>
+                    progress.Report(new CompareProgressInfo
+                    {
+                        CompletedTables = results.Count,
+                        TotalTables = totalExpected,
+                        LatestTable = null,
+                        ActiveSourceTable = srcTable.Display,
+                        RowsCompared = v.Compared,
+                        RowsTotal = v.Total,
+                    }));
+            }
+
+            var mergeSw = Stopwatch.StartNew();
             var compare = RowMergeComparer.Compare(
                 srcRows,
                 dstRows,
@@ -291,16 +380,22 @@ public sealed class DataCompareService
                 sampled,
                 srcTable.Display,
                 dstTable.Value.Display,
-                keySummary);
+                keySummary,
+                mergeProgress,
+                cancellationToken);
+            mergeSw.Stop();
             results.Add(compare);
             logger.LogInformation(
-                "[{Current}/{Total}] Done {Src}: {Status}",
-                tableOrdinal, work.Count, srcTable.Display, compare.Status);
+                "[{Current}/{Total}] Done {Src}: {Status} (merge {MergeMs}ms)",
+                tableOrdinal, work.Count, srcTable.Display, compare.Status, mergeSw.ElapsedMilliseconds);
             progress?.Report(new CompareProgressInfo
             {
                 CompletedTables = results.Count,
                 TotalTables = totalExpected,
                 LatestTable = compare,
+                ActiveSourceTable = null,
+                RowsCompared = null,
+                RowsTotal = null,
             });
         }
 
@@ -308,6 +403,7 @@ public sealed class DataCompareService
         {
             ProjectName = project.Name ?? "CompareProject",
             Tables = results,
+            Cancelled = false,
         };
     }
 
@@ -332,6 +428,21 @@ public sealed class DataCompareService
         {
             if (string.IsNullOrWhiteSpace(sel.SourceTable))
                 continue;
+            if (sel.Skip)
+            {
+                var skipLabel = string.IsNullOrWhiteSpace(sel.SourceSchema)
+                    ? sel.SourceTable.Trim()
+                    : $"{sel.SourceSchema}.{sel.SourceTable}";
+                results.Add(new TablePairCompareResult
+                {
+                    SourceTable = skipLabel,
+                    DestinationTable = "(skipped)",
+                    Status = TableCompareStatus.Skipped,
+                    ErrorMessage = "Skipped at setup.",
+                });
+                continue;
+            }
+
             if (!TryResolveSourceTable(sourceTables, sel, nameComparer, out var srcTable, out var err))
             {
                 results.Add(new TablePairCompareResult
@@ -465,43 +576,6 @@ public sealed class DataCompareService
         return list;
     }
 
-    private static List<(string SourceColumn, string DestinationColumn)> BuildValueColumnPairs(
-        TableSchema src,
-        TableSchema dst,
-        TableOverride? ov,
-        IReadOnlyList<string> sourceKeyColumns,
-        StringComparer comparer)
-    {
-        var ignore = new HashSet<string>(ov?.IgnoreColumns ?? Enumerable.Empty<string>(), comparer);
-        var map = ov?.ColumnMap;
-        var keys = new HashSet<string>(sourceKeyColumns, comparer);
-        var pairs = new List<(string, string)>();
-
-        if (map is not null && map.Count > 0)
-        {
-            foreach (var (sc, dc) in map)
-            {
-                if (ignore.Contains(sc)) continue;
-                if (keys.Contains(sc)) continue;
-                if (!src.Columns.Any(c => comparer.Equals(c.Name, sc))) continue;
-                if (!dst.Columns.Any(c => comparer.Equals(c.Name, dc))) continue;
-                pairs.Add((src.Columns.First(c => comparer.Equals(c.Name, sc)).Name,
-                    dst.Columns.First(c => comparer.Equals(c.Name, dc)).Name));
-            }
-        }
-
-        foreach (var scol in src.Columns)
-        {
-            if (ignore.Contains(scol.Name)) continue;
-            if (keys.Contains(scol.Name)) continue;
-            var dcol = dst.Columns.FirstOrDefault(d => comparer.Equals(d.Name, scol.Name));
-            if (dcol is null) continue;
-            if (pairs.Any(p => comparer.Equals(p.Item1, scol.Name))) continue;
-            pairs.Add((scol.Name, dcol.Name));
-        }
-
-        return pairs;
-    }
 }
 
 internal sealed class TableRefComparer : IEqualityComparer<TableRef>
@@ -604,6 +678,7 @@ internal sealed class InsertFolderCompareSide : CompareSide
         CancellationToken cancellationToken)
     {
         _ = whereClause;
+        cancellationToken.ThrowIfCancellationRequested();
         var all = _folder.LoadAllRows(table, ov?.InsertFilePath, maxRows,
             projectedColumns);
         var projected = all.Select(row =>

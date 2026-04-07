@@ -21,6 +21,7 @@
             </MenuItem>
             <MenuItem Header="_Compare">
                 <MenuItem Header="_Run Compare"           Command="{Binding RunCompareCommand}" FontWeight="SemiBold"/>
+                <MenuItem Header="_Stop Compare"          Command="{Binding CancelCompareCommand}"/>
                 <Separator/>
                 <MenuItem Header="_Sync to Destination…"  Command="{Binding SyncToDestinationCommand}"/>
             </MenuItem>
@@ -318,20 +319,25 @@
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
                                 <CheckBox Grid.Row="0" Grid.ColumnSpan="2"
                                           Content="Ordinal ignore case (recommended)"
                                           IsChecked="{Binding OrdinalIgnoreCase}"
                                           Margin="0,0,0,8"/>
-                                <TextBlock Grid.Row="1" Grid.Column="0"
+                                <CheckBox Grid.Row="1" Grid.ColumnSpan="2"
+                                          Content="Skip binary / image columns in compare (faster for blob tables; keys still compared)"
+                                          IsChecked="{Binding SkipBinaryColumnsInCompare}"
+                                          Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="2" Grid.Column="0"
                                            Text="Max reported diffs / table"
                                            VerticalAlignment="Center" Margin="0,0,12,6"/>
-                                <TextBox Grid.Row="1" Grid.Column="1"
+                                <TextBox Grid.Row="2" Grid.Column="1"
                                          Text="{Binding MaxReportedDiffsPerTable}" Margin="0,0,0,6"/>
-                                <TextBlock Grid.Row="2" Grid.Column="0"
+                                <TextBlock Grid.Row="3" Grid.Column="0"
                                            Text="Command timeout (seconds)"
                                            VerticalAlignment="Center" Margin="0,0,12,0"/>
-                                <TextBox Grid.Row="2" Grid.Column="1"
+                                <TextBox Grid.Row="3" Grid.Column="1"
                                          Text="{Binding CommandTimeoutSeconds}"/>
                             </Grid>
                         </GroupBox>
@@ -340,6 +346,7 @@
                             <StackPanel>
                                 <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,6" FontSize="12">
                                     Leave empty to compare every table on the source. Destination schema/table is optional.
+                                    Use Skip to exclude a listed table without removing the row.
                                 </TextBlock>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                                     <Button Content="Add row" Command="{Binding AddTableRowCommand}"
@@ -356,6 +363,9 @@
                                           MinHeight="160"
                                           HeadersVisibility="Column">
                                     <DataGrid.Columns>
+                                        <DataGridCheckBoxColumn Header="Skip"
+                                                                Binding="{Binding SkipCompare, UpdateSourceTrigger=PropertyChanged}"
+                                                                Width="52"/>
                                         <DataGridTextColumn Header="Source schema"
                                                             Binding="{Binding SourceSchema, UpdateSourceTrigger=PropertyChanged}"
                                                             Width="*"/>
@@ -386,14 +396,22 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                        <TextBlock Text="Tables included in sync:" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="SemiBold"/>
-                        <Button Content="Select all tables" Command="{Binding SelectAllTablesForSyncCommand}" Padding="10,4" Margin="0,0,8,0"/>
-                        <Button Content="Clear tables" Command="{Binding ClearTablesForSyncCommand}" Padding="10,4" Margin="0,0,16,0"/>
-                        <TextBlock Text="Rows (selected table):" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="SemiBold"/>
-                        <Button Content="Select all rows" Command="{Binding SelectAllRowDiffsCommand}" Padding="10,4" Margin="0,0,8,0"/>
-                        <Button Content="Clear rows" Command="{Binding ClearRowDiffsCommand}" Padding="10,4"/>
-                    </StackPanel>
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,8">
+                        <TextBlock Text="Tables included in sync:" VerticalAlignment="Center" Margin="0,4,10,4" FontWeight="SemiBold"/>
+                        <Button Content="Select all tables" Command="{Binding SelectAllTablesForSyncCommand}" Padding="10,4" Margin="0,2,8,2"/>
+                        <Button Content="Clear tables" Command="{Binding ClearTablesForSyncCommand}" Padding="10,4" Margin="0,2,8,2"/>
+                        <Button Content="Sync ON — selected tables" Command="{Binding SetSyncOnSelectedTablesCommand}" Padding="10,4" Margin="0,2,8,2"
+                                ToolTip="In the compare-results grid below, Ctrl+click or Shift+click to select multiple table rows, then turn Sync on for those tables only."/>
+                        <Button Content="Sync OFF — selected tables" Command="{Binding ClearSyncOnSelectedTablesCommand}" Padding="10,4" Margin="0,2,16,2"
+                                ToolTip="Clear the Sync checkbox only for the selected rows in the compare-results grid."/>
+                        <TextBlock Text="Rows (selected table):" VerticalAlignment="Center" Margin="0,4,10,4" FontWeight="SemiBold"/>
+                        <Button Content="Select all rows" Command="{Binding SelectAllRowDiffsCommand}" Padding="10,4" Margin="0,2,8,2"/>
+                        <Button Content="Clear rows" Command="{Binding ClearRowDiffsCommand}" Padding="10,4" Margin="0,2,8,2"/>
+                        <Button Content="Sync ON — selected rows" Command="{Binding SetSyncOnSelectedRowDiffsCommand}" Padding="10,4" Margin="0,2,8,2"
+                                ToolTip="In the differing-rows grid, Ctrl+click or Shift+click to select multiple rows, then turn Sync on for those only."/>
+                        <Button Content="Sync OFF — selected rows" Command="{Binding ClearSyncOnSelectedRowDiffsCommand}" Padding="10,4" Margin="0,2,0,2"
+                                ToolTip="Clear the Sync checkbox only for the selected rows in the differing-rows grid."/>
+                    </WrapPanel>
 
                     <Grid Grid.Row="1">
                         <Grid.ColumnDefinitions>
@@ -427,8 +445,10 @@
                                       AutoGenerateColumns="False"
                                       HeadersVisibility="Column"
                                       CanUserAddRows="False"
-                                      SelectionMode="Single"
-                                      IsReadOnly="False">
+                                      SelectionMode="Extended"
+                                      SelectionUnit="FullRow"
+                                      IsReadOnly="False"
+                                      SelectionChanged="CompareResultsGrid_OnSelectionChanged">
                                 <DataGrid.Columns>
                                     <DataGridTemplateColumn Header="Sync" Width="52">
                                         <DataGridTemplateColumn.CellTemplate>
@@ -456,8 +476,11 @@
                         <GroupBox Grid.Column="2" Header="Differing rows (sample)" Padding="8"
                                   ToolTip="If not all differences are listed, increase Max reported diffs / table on the Setup tab and run compare again.">
                             <DockPanel>
-                                <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,8" FontSize="12"
-                                           Text="Select a table on the left, then select a row below to expand per-column source vs destination values (value-difference rows). Row list is limited by Max reported diffs / table."/>
+                                <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,8" FontSize="12">
+                                    Select a table on the left (Ctrl/Shift+click for multiple tables — use <Run FontWeight="SemiBold">Sync ON/OFF — selected tables</Run> above).
+                                    Then select row(s) below (Ctrl/Shift+click for bulk row Sync). Expand a row for per-column source vs destination values.
+                                    Row list is limited by Max reported diffs / table.
+                                </TextBlock>
                                 <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
@@ -482,7 +505,9 @@
                                           CanUserAddRows="False"
                                           IsReadOnly="False"
                                           RowDetailsVisibilityMode="VisibleWhenSelected"
-                                          SelectionMode="Single">
+                                          SelectionMode="Extended"
+                                          SelectionUnit="FullRow"
+                                          SelectionChanged="RowDiffsGrid_OnSelectionChanged">
                                     <DataGrid.RowDetailsTemplate>
                                         <DataTemplate>
                                             <Border Background="#f4f6f8" Padding="10,8" Margin="4,0,4,8" CornerRadius="4">
@@ -554,7 +579,10 @@
                         <CheckBox Content="Update changed" IsChecked="{Binding SyncUpdateChanged}"
                                   VerticalAlignment="Center" Margin="0,0,12,0"/>
                         <CheckBox Content="Delete extra (destructive)" IsChecked="{Binding SyncDeleteExtra}"
-                                  VerticalAlignment="Center" Margin="0,0,16,0" Foreground="DarkRed"/>
+                                  VerticalAlignment="Center" Margin="0,0,12,0" Foreground="DarkRed"/>
+                        <CheckBox Content="Disable FK checks" IsChecked="{Binding SyncDisableForeignKeyChecks}"
+                                  VerticalAlignment="Center" Margin="0,0,16,0" Foreground="DarkOrange"
+                                  ToolTip="Suppresses foreign-key constraint checks during sync. Use when tables have circular FK references or when topological ordering is insufficient."/>
                         <Button Content="Sync to destination…" Command="{Binding SyncToDestinationCommand}"
                                 Padding="14,5" FontWeight="SemiBold"/>
                     </StackPanel>

@@ -62,6 +62,38 @@ internal static class SyncSqlBuilder
         return qtable(table);
     }
 
+    /// <summary>
+    /// Returns (disableSql, enableSql) to wrap a table's sync batch with FK-check suppression.
+    /// <para>
+    /// SQL Server: per-table <c>ALTER TABLE … NOCHECK / WITH CHECK CHECK CONSTRAINT ALL</c>
+    /// — persistent (not connection-scoped), so it survives across connection re-opens.
+    /// </para>
+    /// <para>
+    /// PostgreSQL: <c>SET session_replication_role</c> — connection-scoped, must be in the
+    /// same <c>ExecuteBatchNonQueryAsync</c> call.
+    /// </para>
+    /// <para>
+    /// MySQL: <c>SET FOREIGN_KEY_CHECKS</c> — connection-scoped, same requirement.
+    /// </para>
+    /// </summary>
+    public static (string Disable, string Enable) GetFkCheckWrapSql(TableRef destTable, string provider) =>
+        DatabaseProviderNames.Parse(provider) switch
+        {
+            DatabaseProviderKind.SqlServer => (
+                $"ALTER TABLE {SqlIdentifier.SqlServerQuoteTable(destTable)} NOCHECK CONSTRAINT ALL",
+                $"ALTER TABLE {SqlIdentifier.SqlServerQuoteTable(destTable)} WITH CHECK CHECK CONSTRAINT ALL"
+            ),
+            DatabaseProviderKind.PostgreSql => (
+                "SET session_replication_role = replica",
+                "SET session_replication_role = DEFAULT"
+            ),
+            DatabaseProviderKind.MySql => (
+                "SET FOREIGN_KEY_CHECKS = 0",
+                "SET FOREIGN_KEY_CHECKS = 1"
+            ),
+            _ => throw new ArgumentOutOfRangeException(nameof(provider)),
+        };
+
     private static (Func<TableRef, string> QTable, Func<string, string> QCol, Func<int, string> PRef)
         Dialect(string provider)
     {

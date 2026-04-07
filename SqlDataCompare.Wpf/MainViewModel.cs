@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 using System.Windows;
 using System.Windows.Data;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -33,6 +34,8 @@ public partial class MainViewModel : ObservableObject
     public IReadOnlyList<string> SqlDialects { get; } = EndpointEditorModel.SqlDialects;
 
     [ObservableProperty] private bool ordinalIgnoreCase = true;
+    /// <summary>Exclude image/varbinary/blob columns from value compare and row load (keys still used).</summary>
+    [ObservableProperty] private bool skipBinaryColumnsInCompare = true;
     [ObservableProperty] private int maxReportedDiffsPerTable = 1000;
     [ObservableProperty] private int commandTimeoutSeconds = 120;
 
@@ -101,20 +104,32 @@ public partial class MainViewModel : ObservableObject
 
     private Stopwatch? _compareStopwatch;
     private Stopwatch? _syncStopwatch;
+    private CancellationTokenSource? _compareCts;
 
     [ObservableProperty] private bool syncInsertMissing = true;
     [ObservableProperty] private bool syncUpdateChanged = true;
     [ObservableProperty] private bool syncDeleteExtra = false;
+    [ObservableProperty] private bool syncDisableForeignKeyChecks = false;
 
     private bool CanExecuteWhenNotBusy() => !IsBusy;
 
     partial void OnIsBusyChanged(bool value)
     {
         RunCompareCommand.NotifyCanExecuteChanged();
+        CancelCompareCommand.NotifyCanExecuteChanged();
         DiscoverSourceTablesCommand.NotifyCanExecuteChanged();
         SyncToDestinationCommand.NotifyCanExecuteChanged();
         TestSourceConnectionCommand.NotifyCanExecuteChanged();
         TestDestinationConnectionCommand.NotifyCanExecuteChanged();
+    }
+
+    private bool CanCancelCompare() => _compareCts is { IsCancellationRequested: false };
+
+    [RelayCommand(CanExecute = nameof(CanCancelCompare))]
+    private void CancelCompare()
+    {
+        _compareCts?.Cancel();
+        CancelCompareCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnTableFilterTextChanged(string value) =>
@@ -131,6 +146,8 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnSelectedCompareResultChanged(CompareResultTableVm? value)
     {
+        SetBulkSelectedRowDiffs([]);
+
         if (value is null)
         {
             RowDiffsView = null;
@@ -211,12 +228,14 @@ public partial class MainViewModel : ObservableObject
         SourceEndpoint.ApplyFrom(new DatabaseEndpoint());
         DestEndpoint.ApplyFrom(new DatabaseEndpoint());
         OrdinalIgnoreCase = true;
+        SkipBinaryColumnsInCompare = true;
         MaxReportedDiffsPerTable = 1000;
         CommandTimeoutSeconds = 120;
         TableRows.Clear();
         _persistedOverrides = new List<TableOverride>();
         ResultRows.Clear();
         SelectedCompareResult = null;
+        SetBulkSelectedCompareResults([]);
         TableFilterText = "";
         TableFilterPreset = "All";
         RowDiffFilterText = "";
@@ -259,6 +278,7 @@ public partial class MainViewModel : ObservableObject
         SourceEndpoint.ApplyFrom(p.Source);
         DestEndpoint.ApplyFrom(p.Destination);
         OrdinalIgnoreCase = p.Options.OrdinalIgnoreCase;
+        SkipBinaryColumnsInCompare = p.Options.SkipBinaryColumnsInCompare;
         MaxReportedDiffsPerTable = p.Options.MaxReportedDiffsPerTable;
         CommandTimeoutSeconds = p.Options.CommandTimeoutSeconds;
         _persistedOverrides = p.TableOverrides.Select(o => CloneOverride(o)).ToList();
@@ -282,6 +302,7 @@ public partial class MainViewModel : ObservableObject
         SourceTable = o.SourceTable,
         DestSchema = o.DestSchema,
         DestTable = o.DestTable,
+        SkipCompare = o.SkipCompare,
         KeyColumns = o.KeyColumns?.ToList(),
         IgnoreColumns = o.IgnoreColumns?.ToList(),
         ColumnMap = o.ColumnMap?.ToDictionary(x => x.Key, x => x.Value),
@@ -344,6 +365,7 @@ public partial class MainViewModel : ObservableObject
             Options = new CompareOptions
             {
                 OrdinalIgnoreCase = OrdinalIgnoreCase,
+                SkipBinaryColumnsInCompare = SkipBinaryColumnsInCompare,
                 TrimStrings = false,
                 MaxReportedDiffsPerTable = MaxReportedDiffsPerTable <= 0 ? 1000 : MaxReportedDiffsPerTable,
                 CommandTimeoutSeconds = CommandTimeoutSeconds <= 0 ? 120 : CommandTimeoutSeconds,
@@ -395,6 +417,7 @@ public partial class MainViewModel : ObservableObject
     private CompareOptions BuildOptionsForConnectionTest() => new()
     {
         OrdinalIgnoreCase = OrdinalIgnoreCase,
+        SkipBinaryColumnsInCompare = SkipBinaryColumnsInCompare,
         TrimStrings = false,
         MaxReportedDiffsPerTable = MaxReportedDiffsPerTable <= 0 ? 1000 : MaxReportedDiffsPerTable,
         CommandTimeoutSeconds = CommandTimeoutSeconds <= 0 ? 120 : CommandTimeoutSeconds,
@@ -507,6 +530,7 @@ public partial class MainViewModel : ObservableObject
     {
         ResultRows.Clear();
         SelectedCompareResult = null;
+        SetBulkSelectedCompareResults([]);
         TableFilterPreset = "All";
         RowDiffKindPreset = "All kinds";
         _filteredResultRows.Refresh();
@@ -547,6 +571,8 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        _compareCts = new CancellationTokenSource();
+        CancelCompareCommand.NotifyCanExecuteChanged();
         IsBusy = true;
         CompareProgressIndeterminate = true;
         CompareProgressPercent = 0;
@@ -557,14 +583,23 @@ public partial class MainViewModel : ObservableObject
         try
         {
             var svc = new DataCompareService();
-            var result = await svc.RunAsync(project, Logger, CancellationToken.None, progress);
+            var result = await svc.RunAsync(project, Logger, _compareCts.Token, progress);
 
             var diff = result.Tables.Count(x =>
                 x.Status is TableCompareStatus.Different or TableCompareStatus.SampledDifferent);
             var err = result.Tables.Count(x => x.Status == TableCompareStatus.Error);
             var elapsedStr = FormatShortTime(_compareStopwatch.Elapsed);
-            StatusMessage =
-                $"Done in {elapsedStr}. Identical: {result.Tables.Count(x => x.Status == TableCompareStatus.Identical)}, different: {diff}, errors: {err}, skipped: {result.Tables.Count(x => x.Status == TableCompareStatus.Skipped)}.";
+            if (result.Cancelled)
+            {
+                StatusMessage =
+                    $"Compare stopped after {elapsedStr}. Showing {result.Tables.Count} table(s) completed so far — you can filter, copy, and sync selected rows. " +
+                    $"Identical: {result.Tables.Count(x => x.Status == TableCompareStatus.Identical)}, different: {diff}, errors: {err}, skipped: {result.Tables.Count(x => x.Status == TableCompareStatus.Skipped)}.";
+            }
+            else
+            {
+                StatusMessage =
+                    $"Done in {elapsedStr}. Identical: {result.Tables.Count(x => x.Status == TableCompareStatus.Identical)}, different: {diff}, errors: {err}, skipped: {result.Tables.Count(x => x.Status == TableCompareStatus.Skipped)}.";
+            }
         }
         catch (Exception ex)
         {
@@ -574,6 +609,9 @@ public partial class MainViewModel : ObservableObject
         {
             _compareStopwatch?.Stop();
             _compareStopwatch = null;
+            _compareCts?.Dispose();
+            _compareCts = null;
+            CancelCompareCommand.NotifyCanExecuteChanged();
             IsBusy = false;
             CompareProgressIndeterminate = false;
             CompareProgressPercent = 0;
@@ -586,10 +624,17 @@ public partial class MainViewModel : ObservableObject
         if (p.LatestTable is { } t)
             ResultRows.Add(CompareResultTableVm.From(t));
 
+        var rowCompared = p.RowsCompared;
+        var rowTotal = p.RowsTotal;
+
         if (p.TotalTables > 0)
         {
             CompareProgressIndeterminate = false;
-            CompareProgressPercent = Math.Min(100, p.CompletedTables * 100.0 / p.TotalTables);
+            var slot = 100.0 / p.TotalTables;
+            var within = 0.0;
+            if (rowTotal is > 0 && rowCompared is { } rc)
+                within = slot * Math.Min(1.0, (double)rc / rowTotal.Value);
+            CompareProgressPercent = Math.Min(100, p.CompletedTables * slot + within);
         }
         else
         {
@@ -598,15 +643,24 @@ public partial class MainViewModel : ObservableObject
         }
 
         var elapsed = _compareStopwatch?.Elapsed ?? TimeSpan.Zero;
-        CompareTimingText = FormatCompareTimingLine(elapsed, p.CompletedTables, p.TotalTables);
+        var timingLine = FormatCompareTimingLine(elapsed, p.CompletedTables, p.TotalTables);
+        if (rowTotal is > 0 && rowCompared is { } rc2)
+            timingLine += $" · compared {rc2:N0} rows from {rowTotal:N0} total";
+        CompareTimingText = timingLine;
 
         if (p.TotalTables > 0)
         {
             if (p.LatestTable is null && p.CompletedTables == 0)
                 StatusMessage = $"Preparing {p.TotalTables} table(s) (source is read-only)…";
+            else if (rowTotal is > 0 && rowCompared is { } r && p.LatestTable is null)
+            {
+                var name = p.ActiveSourceTable ?? "…";
+                StatusMessage =
+                    $"Comparing {p.CompletedTables + 1}/{p.TotalTables} — {name} — compared {r:N0} rows from {rowTotal:N0} total";
+            }
             else
             {
-                var name = p.LatestTable?.SourceTable ?? "…";
+                var name = p.LatestTable?.SourceTable ?? p.ActiveSourceTable ?? "…";
                 StatusMessage = $"Comparing {p.CompletedTables}/{p.TotalTables} — {name}";
             }
         }
@@ -692,6 +746,7 @@ public partial class MainViewModel : ObservableObject
                 InsertMissing = SyncInsertMissing,
                 UpdateChanged = SyncUpdateChanged,
                 DeleteExtra = SyncDeleteExtra,
+                DisableForeignKeyChecks = SyncDisableForeignKeyChecks,
                 Selection = BuildSyncSelection(ResultRows),
             };
             var svc = new DataSyncService();
@@ -813,6 +868,57 @@ public partial class MainViewModel : ObservableObject
             IncludedSourceTables = includedTables,
             RowsBySourceTable = rowFilters,
         };
+    }
+
+    private readonly List<CompareResultTableVm> _bulkSelectedCompareResults = new();
+    private readonly List<RowDiffSelectableVm> _bulkSelectedRowDiffs = new();
+
+    public void SetBulkSelectedCompareResults(IEnumerable<CompareResultTableVm> items)
+    {
+        _bulkSelectedCompareResults.Clear();
+        _bulkSelectedCompareResults.AddRange(items);
+        SetSyncOnSelectedTablesCommand.NotifyCanExecuteChanged();
+        ClearSyncOnSelectedTablesCommand.NotifyCanExecuteChanged();
+    }
+
+    public void SetBulkSelectedRowDiffs(IEnumerable<RowDiffSelectableVm> items)
+    {
+        _bulkSelectedRowDiffs.Clear();
+        _bulkSelectedRowDiffs.AddRange(items);
+        SetSyncOnSelectedRowDiffsCommand.NotifyCanExecuteChanged();
+        ClearSyncOnSelectedRowDiffsCommand.NotifyCanExecuteChanged();
+    }
+
+    private bool CanBulkSyncSelectedTables() => _bulkSelectedCompareResults.Count > 0;
+
+    private bool CanBulkSyncSelectedRowDiffs() => _bulkSelectedRowDiffs.Count > 0;
+
+    [RelayCommand(CanExecute = nameof(CanBulkSyncSelectedTables))]
+    private void SetSyncOnSelectedTables()
+    {
+        foreach (var r in _bulkSelectedCompareResults)
+            r.IncludeInSync = true;
+    }
+
+    [RelayCommand(CanExecute = nameof(CanBulkSyncSelectedTables))]
+    private void ClearSyncOnSelectedTables()
+    {
+        foreach (var r in _bulkSelectedCompareResults)
+            r.IncludeInSync = false;
+    }
+
+    [RelayCommand(CanExecute = nameof(CanBulkSyncSelectedRowDiffs))]
+    private void SetSyncOnSelectedRowDiffs()
+    {
+        foreach (var x in _bulkSelectedRowDiffs)
+            x.IncludeInSync = true;
+    }
+
+    [RelayCommand(CanExecute = nameof(CanBulkSyncSelectedRowDiffs))]
+    private void ClearSyncOnSelectedRowDiffs()
+    {
+        foreach (var x in _bulkSelectedRowDiffs)
+            x.IncludeInSync = false;
     }
 
     [RelayCommand]

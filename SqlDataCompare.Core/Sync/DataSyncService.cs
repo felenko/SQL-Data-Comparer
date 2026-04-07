@@ -46,6 +46,52 @@ public sealed class DataSyncService
         var overrideIndex = BuildOverrideIndex(project.TableOverrides, nameComparer);
         var work = BuildWorklist(project, sourceTables, nameComparer, results);
 
+        // Topological sort: resolve destination tables, load FK graph, reorder worklist
+        // so that parent (referenced) tables are synced before child (referencing) tables.
+        try
+        {
+            var destTableMapping = work.Select(w =>
+            {
+                var ov = FindOverride(overrideIndex, w.Item1);
+                return ResolveDestTable(w.Item1, ov, w.Item2, destSet, nameComparer);
+            }).ToList();
+
+            var resolvedDestTables = destTableMapping
+                .Where(d => d.HasValue).Select(d => d!.Value)
+                .Distinct(TableRefEqualityComparer.OrdinalIgnoreCase).ToList();
+
+            if (resolvedDestTables.Count > 0)
+            {
+                var fkEdges = await ForeignKeyLoader.LoadAsync(
+                    destDbEndpoint, project.Options, resolvedDestTables, cancellationToken);
+
+                if (fkEdges.Count > 0)
+                {
+                    var (sorted, cycles) = TableSyncOrderer.Sort(resolvedDestTables, fkEdges);
+
+                    if (cycles.Count > 0)
+                        logger.LogWarning(
+                            "Circular FK references detected among tables [{Tables}]. " +
+                            "Enable 'Disable FK Checks' for reliable sync.",
+                            string.Join(", ", cycles.Select(t => t.Display)));
+
+                    var sortedPos = new Dictionary<TableRef, int>(TableRefEqualityComparer.OrdinalIgnoreCase);
+                    for (var s = 0; s < sorted.Count; s++)
+                        sortedPos[sorted[s]] = s;
+
+                    work = work
+                        .Zip(destTableMapping, (w, d) => (Src: w.Item1, Sel: w.Item2, Dest: d))
+                        .OrderBy(x => x.Dest.HasValue && sortedPos.TryGetValue(x.Dest.Value, out var pos) ? pos : int.MaxValue)
+                        .Select(x => (x.Src, x.Sel))
+                        .ToList();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "FK dependency analysis failed; syncing tables in original order.");
+        }
+
         var tablesTotal = work.Count;
         progress?.Report(new SyncProgressInfo
         {
@@ -60,6 +106,34 @@ public sealed class DataSyncService
             cancellationToken.ThrowIfCancellationRequested();
             tableIndex++;
             var ov = FindOverride(overrideIndex, srcTable);
+            if (ov?.SkipCompare == true)
+            {
+                progress?.Report(new SyncProgressInfo
+                {
+                    Phase = SyncProgressPhase.TableStarting,
+                    TablesTotal = tablesTotal,
+                    TableIndex = tableIndex,
+                    SourceTable = srcTable.Display,
+                    DestinationTable = "(skipped)",
+                });
+                results.Add(new TableSyncResult
+                {
+                    SourceTable = srcTable.Display,
+                    DestinationTable = "(skipped)",
+                    Status = SyncStatus.Skipped,
+                    ErrorMessage = "Skipped at setup (table override).",
+                });
+                progress?.Report(new SyncProgressInfo
+                {
+                    Phase = SyncProgressPhase.TableCompleted,
+                    TablesTotal = tablesTotal,
+                    TableIndex = tableIndex,
+                    SourceTable = srcTable.Display,
+                    DestinationTable = "(skipped)",
+                });
+                continue;
+            }
+
             var dstTable = ResolveDestTable(srcTable, ov, sel, destSet, nameComparer);
             if (dstTable is null)
             {
@@ -135,6 +209,7 @@ public sealed class DataSyncService
                     project.Source, project.Destination,
                     nameComparer, valueComparer,
                     provider, syncOptions, logger,
+                    project.Options.SkipBinaryColumnsInCompare,
                     tableIndex, tablesTotal, progress,
                     cancellationToken);
                 results.Add(syncResult);
@@ -186,6 +261,7 @@ public sealed class DataSyncService
         string provider,
         SyncOptions opts,
         ILogger logger,
+        bool skipBinaryColumnsInCompare,
         int tableIndex,
         int tablesTotal,
         IProgress<SyncProgressInfo>? progress,
@@ -219,7 +295,8 @@ public sealed class DataSyncService
         if (destKeyColumns is null)
             throw new InvalidOperationException("Could not map key columns to destination.");
 
-        var valuePairs = BuildValueColumnPairs(srcSchema, dstSchema, ov, keys.KeyColumns, nameComparer);
+        var valuePairs = CompareColumnPairBuilder.BuildValueColumnPairs(
+            srcSchema, dstSchema, ov, keys.KeyColumns, nameComparer, skipBinaryColumnsInCompare);
 
         var where = srcEndpoint is DatabaseEndpoint ? ov?.WhereClause : null;
         var destWhere = dstEndpoint is DatabaseEndpoint ? ov?.WhereClause : null;
@@ -229,12 +306,15 @@ public sealed class DataSyncService
         var dstProject = destKeyColumns.Concat(valuePairs.Select(p => p.DestinationColumn))
             .Distinct(StringComparer.Ordinal).ToList();
 
-        var srcRows = await sourceSide.LoadRowsAsync(srcTable, ov, srcProject, keys.KeyColumns, where, null, ct);
-        var dstRows = await destSide.LoadRowsAsync(dstTable, ov, dstProject, destKeyColumns, destWhere, null, ct);
+        var srcTask = sourceSide.LoadRowsAsync(srcTable, ov, srcProject, keys.KeyColumns, where, null, ct);
+        var dstTask = destSide.LoadRowsAsync(dstTable, ov, dstProject, destKeyColumns, destWhere, null, ct);
+        await Task.WhenAll(srcTask, dstTask);
+        var srcRows = await srcTask;
+        var dstRows = await dstTask;
 
-        // Sort both by key (same approach as RowMergeComparer)
-        var srcSorted = srcRows.OrderBy(r => KeyString(r, keys.KeyColumns), StringComparer.Ordinal).ToList();
-        var dstSorted = dstRows.OrderBy(r => KeyString(r, destKeyColumns), StringComparer.Ordinal).ToList();
+        // Same ordering as compare: reuse fast path when SQL already returned rows ordered by key.
+        var srcSorted = RowMergeComparer.EnsureSortedByKeyString(srcRows, keys.KeyColumns, ct);
+        var dstSorted = RowMergeComparer.EnsureSortedByKeyString(dstRows, destKeyColumns, ct);
 
         var batch = new List<(string Sql, IReadOnlyList<object?> Params)>();
 
@@ -292,8 +372,12 @@ public sealed class DataSyncService
                     if (hasDiff &&
                         IsRowIncluded(opts.Selection, srcTable.Display, RowDifferenceKind.ValueMismatch, ks))
                     {
-                        batch.Add(BuildUpdate(srcSorted[i], dstSorted[j], dstTable, keys.KeyColumns, destKeyColumns, valuePairs, provider));
-                        updated++;
+                        if (BuildUpdate(srcSorted[i], dstSorted[j], dstTable, keys.KeyColumns, destKeyColumns, valuePairs,
+                                dstSchema, provider) is { } updStmt)
+                        {
+                            batch.Add(updStmt);
+                            updated++;
+                        }
                     }
                 }
                 i++;
@@ -329,6 +413,16 @@ public sealed class DataSyncService
 
         if (needsIdentityInsert)
             batch.Add(($"SET IDENTITY_INSERT {SyncSqlBuilder.QuoteTable(dstTable, provider)} OFF", Array.Empty<object?>()));
+
+        // Wrap with FK-check suppression when requested.
+        // Must be in the same ExecuteBatchNonQueryAsync call because MySQL/PostgreSQL
+        // disable is connection-scoped; SQL Server uses ALTER TABLE which is persistent.
+        if (opts.DisableForeignKeyChecks && batch.Count > 0)
+        {
+            var (disableFkSql, enableFkSql) = SyncSqlBuilder.GetFkCheckWrapSql(dstTable, provider);
+            batch.Insert(0, (disableFkSql, Array.Empty<object?>()));
+            batch.Add((enableFkSql, Array.Empty<object?>()));
+        }
 
         var totalStmts = batch.Count;
         progress?.Report(new SyncProgressInfo
@@ -398,27 +492,36 @@ public sealed class DataSyncService
             var destCol = dstSchema.Columns.FirstOrDefault(c => string.Equals(c.Name, dc, StringComparison.OrdinalIgnoreCase));
             if (destCol?.IsIdentity == true) continue;
             srcRow.TryGetValue(sc, out var val);
+            if (SyncBinaryColumnGuard.ShouldOmitValue(destCol?.PhysicalType, val))
+                continue;
             values.Add((dc, val));
         }
 
         return SyncSqlBuilder.BuildInsert(dstTable, values, provider);
     }
 
-    private static (string Sql, IReadOnlyList<object?> Params) BuildUpdate(
+    private static (string Sql, IReadOnlyList<object?> Params)? BuildUpdate(
         Dictionary<string, object?> srcRow,
         Dictionary<string, object?> dstRow,
         TableRef dstTable,
         IReadOnlyList<string> srcKeyColumns,
         IReadOnlyList<string> destKeyColumns,
         IReadOnlyList<(string SourceColumn, string DestinationColumn)> valuePairs,
+        TableSchema dstSchema,
         string provider)
     {
         var setValues = new List<(string DestCol, object? Value)>();
         foreach (var (sc, dc) in valuePairs)
         {
             srcRow.TryGetValue(sc, out var val);
+            var destCol = dstSchema.Columns.FirstOrDefault(c => string.Equals(c.Name, dc, StringComparison.OrdinalIgnoreCase));
+            if (SyncBinaryColumnGuard.ShouldOmitValue(destCol?.PhysicalType, val))
+                continue;
             setValues.Add((dc, val));
         }
+
+        if (setValues.Count == 0)
+            return null;
 
         var whereValues = new List<(string DestCol, object? Value)>();
         for (var k = 0; k < destKeyColumns.Count; k++)
@@ -481,6 +584,21 @@ public sealed class DataSyncService
                      .ThenBy(s => s.SourceTable, nameComparer))
         {
             if (string.IsNullOrWhiteSpace(sel.SourceTable)) continue;
+            if (sel.Skip)
+            {
+                var skipLabel = string.IsNullOrWhiteSpace(sel.SourceSchema)
+                    ? sel.SourceTable.Trim()
+                    : $"{sel.SourceSchema}.{sel.SourceTable}";
+                results.Add(new TableSyncResult
+                {
+                    SourceTable = skipLabel,
+                    DestinationTable = "(skipped)",
+                    Status = SyncStatus.Skipped,
+                    ErrorMessage = "Skipped at setup.",
+                });
+                continue;
+            }
+
             var matches = sourceTables.Where(t =>
                 nameComparer.Equals(t.Name, sel.SourceTable) &&
                 (string.IsNullOrWhiteSpace(sel.SourceSchema) || nameComparer.Equals(t.Schema, sel.SourceSchema)))
@@ -561,34 +679,4 @@ public sealed class DataSyncService
         return list;
     }
 
-    private static List<(string SourceColumn, string DestinationColumn)> BuildValueColumnPairs(
-        TableSchema src, TableSchema dst, TableOverride? ov,
-        IReadOnlyList<string> sourceKeyColumns, StringComparer comparer)
-    {
-        var ignore = new HashSet<string>(ov?.IgnoreColumns ?? Enumerable.Empty<string>(), comparer);
-        var map = ov?.ColumnMap;
-        var keys = new HashSet<string>(sourceKeyColumns, comparer);
-        var pairs = new List<(string, string)>();
-
-        if (map is { Count: > 0 })
-            foreach (var (sc, dc) in map)
-            {
-                if (ignore.Contains(sc) || keys.Contains(sc)) continue;
-                if (!src.Columns.Any(c => comparer.Equals(c.Name, sc))) continue;
-                if (!dst.Columns.Any(c => comparer.Equals(c.Name, dc))) continue;
-                pairs.Add((src.Columns.First(c => comparer.Equals(c.Name, sc)).Name,
-                    dst.Columns.First(c => comparer.Equals(c.Name, dc)).Name));
-            }
-
-        foreach (var scol in src.Columns)
-        {
-            if (ignore.Contains(scol.Name) || keys.Contains(scol.Name)) continue;
-            var dcol = dst.Columns.FirstOrDefault(d => comparer.Equals(d.Name, scol.Name));
-            if (dcol is null) continue;
-            if (pairs.Any(p => comparer.Equals(p.Item1, scol.Name))) continue;
-            pairs.Add((scol.Name, dcol.Name));
-        }
-
-        return pairs;
-    }
 }

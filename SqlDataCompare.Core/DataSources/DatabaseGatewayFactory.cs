@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.Data.SqlClient;
 using MySqlConnector;
 using Npgsql;
@@ -179,7 +180,7 @@ internal sealed class SqlServerGateway : IDatabaseGateway
             var (sql, parameters) = statements[idx];
             await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = _timeout };
             for (var i = 0; i < parameters.Count; i++)
-                cmd.Parameters.AddWithValue($"@p{i}", parameters[i] ?? DBNull.Value);
+                cmd.Parameters.Add(CreateSqlServerParameter($"@p{i}", parameters[i]));
             total += await cmd.ExecuteNonQueryAsync(cancellationToken);
             batchProgress?.Report((idx + 1, n));
         }
@@ -187,6 +188,19 @@ internal sealed class SqlServerGateway : IDatabaseGateway
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    /// <summary>
+    /// <see cref="SqlCommand.Parameters.AddWithValue"/> infers <c>nvarchar</c> for some CLR types; binding those to
+    /// <c>image</c>/<c>varbinary</c> columns causes SQL Server error 402 (operator type clash).
+    /// </summary>
+    private static SqlParameter CreateSqlServerParameter(string name, object? value)
+    {
+        if (value is null || value is DBNull)
+            return new SqlParameter(name, DBNull.Value);
+        if (value is byte[] bytes)
+            return new SqlParameter(name, SqlDbType.VarBinary, -1) { Value = bytes };
+        return new SqlParameter(name, value);
+    }
 }
 
 internal sealed class NpgsqlGateway : IDatabaseGateway

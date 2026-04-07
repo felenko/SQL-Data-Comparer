@@ -13,6 +13,10 @@ public sealed class ProjectCompareResult
 {
     public required string ProjectName { get; init; }
     public required IReadOnlyList<TablePairCompareResult> Tables { get; init; }
+
+    /// <summary>True when compare was stopped cooperatively; <see cref="Tables"/> contains only work completed before the stop.</summary>
+    public bool Cancelled { get; init; }
+
     public bool AllIdentical => Tables.All(t => t.Status is TableCompareStatus.Identical or TableCompareStatus.Skipped);
 }
 

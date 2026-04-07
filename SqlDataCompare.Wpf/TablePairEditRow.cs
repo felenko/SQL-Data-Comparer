@@ -8,6 +8,7 @@ public partial class TablePairEditRow : ObservableObject
     [ObservableProperty] private string sourceTable = "";
     [ObservableProperty] private string destSchema = "";
     [ObservableProperty] private string destTable = "";
+    [ObservableProperty] private bool skipCompare;
 
     public SqlDataCompare.Project.TablePairSelection ToSelection() => new()
     {
@@ -15,6 +16,7 @@ public partial class TablePairEditRow : ObservableObject
         SourceTable = SourceTable.Trim(),
         DestSchema = string.IsNullOrWhiteSpace(DestSchema) ? null : DestSchema.Trim(),
         DestTable = string.IsNullOrWhiteSpace(DestTable) ? null : DestTable.Trim(),
+        Skip = SkipCompare,
     };
 
     public static TablePairEditRow FromSelection(SqlDataCompare.Project.TablePairSelection s) => new()
@@ -23,6 +25,7 @@ public partial class TablePairEditRow : ObservableObject
         SourceTable = s.SourceTable,
         DestSchema = s.DestSchema ?? "",
         DestTable = s.DestTable ?? "",
+        SkipCompare = s.Skip,
     };
 
     public static TablePairEditRow FromOverride(SqlDataCompare.Project.TableOverride o) => new()
@@ -31,5 +34,6 @@ public partial class TablePairEditRow : ObservableObject
         SourceTable = o.SourceTable,
         DestSchema = o.DestSchema ?? "",
         DestTable = o.DestTable ?? "",
+        SkipCompare = o.SkipCompare,
     };
 }

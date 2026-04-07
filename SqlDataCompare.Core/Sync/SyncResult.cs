@@ -24,6 +24,12 @@ public sealed class SyncOptions
     public bool UpdateChanged { get; set; } = true;
     public bool DeleteExtra { get; set; } = false;
 
+    /// <summary>
+    /// When true: disable FK checks on the destination for the duration of the sync
+    /// (fallback for circular FK graphs or when topological sort is insufficient).
+    /// </summary>
+    public bool DisableForeignKeyChecks { get; set; } = false;
+
     /// <summary>Optional table/row filters from the UI. Null means sync everything the flags allow.</summary>
     public SyncSelection? Selection { get; set; }
 }

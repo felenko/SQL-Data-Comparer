@@ -23,11 +23,18 @@ public sealed class TablePairSelection
     public required string SourceTable { get; set; }
     public string? DestSchema { get; set; }
     public string? DestTable { get; set; }
+    /// <summary>When true, this table is not compared or synced (setup-time exclusion).</summary>
+    public bool Skip { get; set; }
 }
 
 public sealed class CompareOptions
 {
     public bool OrdinalIgnoreCase { get; set; } = true;
+    /// <summary>
+    /// When true, image/varbinary/blob-like columns are excluded from row projection and value compare (and sync data load).
+    /// Keys are still compared; use for tables with large binary payloads.
+    /// </summary>
+    public bool SkipBinaryColumnsInCompare { get; set; }
     public bool TrimStrings { get; set; }
     public int MaxReportedDiffsPerTable { get; set; } = 1000;
     public int CommandTimeoutSeconds { get; set; } = 120;
@@ -41,6 +48,8 @@ public sealed class TableOverride
     public required string SourceTable { get; set; }
     public string? DestSchema { get; set; }
     public string? DestTable { get; set; }
+    /// <summary>When comparing all source tables (empty <see cref="CompareProject.TablesToCompare"/>), skip this table.</summary>
+    public bool SkipCompare { get; set; }
     public List<string>? KeyColumns { get; set; }
     public List<string>? IgnoreColumns { get; set; }
     public Dictionary<string, string>? ColumnMap { get; set; }

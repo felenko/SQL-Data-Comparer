@@ -23,4 +23,5 @@ public interface IDatabaseGateway : IAsyncDisposable
         IReadOnlyList<(string Sql, IReadOnlyList<object?> Parameters)> statements,
         CancellationToken cancellationToken = default,
         IProgress<(int completedStatements, int totalStatements)>? batchProgress = null);
+
 }

@@ -41,4 +41,37 @@ public class ProjectSerializationTests
             try { File.Delete(path); } catch { /* ignore */ }
         }
     }
+
+    [Fact]
+    public void RoundTripsTableSkipFlags()
+    {
+        var p = new CompareProject
+        {
+            Source = new DatabaseEndpoint { ConnectionString = "x" },
+            Destination = new DatabaseEndpoint { ConnectionString = "y" },
+            TablesToCompare =
+            {
+                new TablePairSelection { SourceTable = "A", Skip = true },
+                new TablePairSelection { SourceTable = "B" },
+            },
+            TableOverrides =
+            {
+                new TableOverride { SourceTable = "Huge", SkipCompare = true },
+            },
+        };
+        var path = Path.Combine(Path.GetTempPath(), "sdc-skip-" + Guid.NewGuid() + ".json");
+        try
+        {
+            CompareProjectSerializer.Write(path, p);
+            var back = CompareProjectSerializer.Read(path);
+            Assert.Equal(2, back.TablesToCompare.Count);
+            Assert.True(back.TablesToCompare[0].Skip);
+            Assert.False(back.TablesToCompare[1].Skip);
+            Assert.True(back.TableOverrides[0].SkipCompare);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { /* ignore */ }
+        }
+    }
 }
