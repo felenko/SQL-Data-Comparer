@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "Folder to folder (INSERT scripts)",
+  "source": {
+    "kind": "insertFolder",
+    "rootPath": "C:\\data\\source",
+    "sqlDialect": "SqlServer",
+    "fileNaming": "{table}.sql",
+    "searchPattern": "*.sql",
+    "defaultSchema": null
+  },
+  "destination": {
+    "kind": "insertFolder",
+    "rootPath": "C:\\data\\dest",
+    "sqlDialect": "SqlServer",
+    "fileNaming": "{table}.sql"
+  },
+  "tablesToCompare": [],
+  "options": {
+    "ordinalIgnoreCase": true,
+    "trimStrings": false,
+    "maxReportedDiffsPerTable": 500,
+    "commandTimeoutSeconds": 120,
+    "defaultLogLevel": "Information",
+    "logFilePath": null
+  },
+  "tableOverrides": []
+}

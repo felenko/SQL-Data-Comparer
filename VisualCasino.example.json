@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "name": "Example compare project",
+  "source": {
+    "kind": "database",
+    "provider": "sqlserver",
+    "connectionString": "Data Source=YOUR_SOURCE_SERVER;Initial Catalog=YourDb;Integrated Security=False;User ID=...;Password=...;Encrypt=True;Trust Server Certificate=True"
+  },
+  "destination": {
+    "kind": "database",
+    "provider": "sqlserver",
+    "connectionString": "Data Source=YOUR_DEST_SERVER;Initial Catalog=YourDb;Integrated Security=False;User ID=...;Password=...;Encrypt=True;Trust Server Certificate=True"
+  },
+  "options": {
+    "ordinalIgnoreCase": true,
+    "trimStrings": false,
+    "maxReportedDiffsPerTable": 1000,
+    "commandTimeoutSeconds": 120,
+    "defaultLogLevel": "Information"
+  },
+  "tablesToCompare": [],
+  "tableOverrides": []
+}

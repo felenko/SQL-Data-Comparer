@@ -1,0 +1,565 @@
+<Window x:Class="SqlDataCompare.Wpf.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:SqlDataCompare.Wpf"
+        mc:Ignorable="d"
+        Title="SQL Data Compare" Height="760" Width="1180" MinWidth="900" MinHeight="640"
+        d:DataContext="{d:DesignInstance local:MainViewModel, IsDesignTimeCreatable=False}">
+
+    <DockPanel>
+        <!-- Menu bar -->
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="_File">
+                <MenuItem Header="_New"      Command="{Binding NewProjectCommand}"/>
+                <MenuItem Header="_Open…"    Command="{Binding OpenProjectCommand}"/>
+                <MenuItem Header="_Save"     Command="{Binding SaveProjectCommand}"/>
+                <MenuItem Header="Save _As…" Command="{Binding SaveProjectAsCommand}"/>
+                <Separator/>
+                <MenuItem Header="E_xit" Click="Exit_Click"/>
+            </MenuItem>
+            <MenuItem Header="_Compare">
+                <MenuItem Header="_Run Compare"           Command="{Binding RunCompareCommand}" FontWeight="SemiBold"/>
+                <Separator/>
+                <MenuItem Header="_Sync to Destination…"  Command="{Binding SyncToDestinationCommand}"/>
+            </MenuItem>
+        </Menu>
+
+        <!-- Status bar -->
+        <StatusBar DockPanel.Dock="Bottom">
+            <StatusBarItem HorizontalContentAlignment="Stretch"
+                           Width="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=StatusBar}}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{Binding StatusMessage}"
+                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="4,0"/>
+                    <TextBlock Grid.Column="1" Text="{Binding CompareTimingText}"
+                               VerticalAlignment="Center" Foreground="#555" Margin="8,0,4,0"
+                               MinWidth="140" TextTrimming="CharacterEllipsis"/>
+                    <ProgressBar Grid.Column="2" Width="140" Height="14" Margin="4,2,6,2"
+                                 Minimum="0" Maximum="100"
+                                 Value="{Binding CompareProgressPercent}"
+                                 IsIndeterminate="{Binding CompareProgressIndeterminate}"
+                                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                </Grid>
+            </StatusBarItem>
+        </StatusBar>
+
+        <!-- Main content -->
+        <TabControl Margin="0">
+            <!-- ═══════════ Setup Tab ═══════════ -->
+            <TabItem Header="Setup">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Margin="12,8,12,8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>  <!-- banner + project fields -->
+                        <RowDefinition Height="Auto"/>   <!-- source | destination (min height; page scrolls) -->
+                        <RowDefinition Height="Auto"/>  <!-- options | tables -->
+                    </Grid.RowDefinitions>
+
+                    <!-- Row 0: info banner + project file/name -->
+                    <StackPanel Grid.Row="0" Margin="0,0,0,6">
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,6" Foreground="#0b57d0" FontSize="13">
+                            <Run FontWeight="SemiBold">Source is read-only.</Run>
+                            <Run>Comparison only reads from the source. Nothing in this tool writes to or alters the source; sync applies changes on the destination only.</Run>
+                        </TextBlock>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="16"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Project file" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <TextBox Grid.Column="1" Text="{Binding ProjectPath}" IsReadOnly="True"
+                                     VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="3" Text="Project name" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <TextBox Grid.Column="4" Text="{Binding ProjectName, UpdateSourceTrigger=PropertyChanged}"
+                                     VerticalAlignment="Center"/>
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- Row 1: Source (left) | Destination (right) -->
+                    <Grid Grid.Row="1" Margin="0,6,0,0" MinHeight="280">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Source GroupBox -->
+                        <GroupBox Grid.Column="0" Header="Source (read-only)" Padding="10">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="Endpoint kind"/>
+                                    <ComboBox ItemsSource="{Binding EndpointKinds}"
+                                              SelectedItem="{Binding SourceEndpoint.Kind}"
+                                              Margin="0,2,0,8"/>
+
+                                    <!-- Database mode -->
+                                    <StackPanel Margin="0,4,0,0">
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding SourceEndpoint.Kind}" Value="database">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <TextBlock Text="Database provider"/>
+                                        <ComboBox ItemsSource="{Binding DatabaseProviders}"
+                                                  SelectedItem="{Binding SourceEndpoint.Provider}"
+                                                  Margin="0,2,0,6"/>
+                                        <TextBlock Text="Connection string (use ${ENV:VAR} for secrets)"/>
+                                        <Grid Margin="0,2,0,6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox Grid.Column="0"
+                                                     Text="{Binding SourceEndpoint.ConnectionString, UpdateSourceTrigger=PropertyChanged}"
+                                                     AcceptsReturn="True" Height="52" TextWrapping="Wrap"
+                                                     VerticalScrollBarVisibility="Auto"/>
+                                            <Button Grid.Column="1" Content="SQL connection…"
+                                                    Command="{Binding BrowseSqlSourceCommand}"
+                                                    Padding="10,4" Margin="8,0,0,0" VerticalAlignment="Top">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding SourceEndpoint.Provider}" Value="sqlserver">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                        </Grid>
+                                        <TextBlock Text="Optional: schema filter (e.g. dbo or leave empty for all)"/>
+                                        <TextBox Text="{Binding SourceEndpoint.SchemaIncludePattern, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2,0,0"/>
+                                        <Button Content="Test connection" Command="{Binding TestSourceConnectionCommand}"
+                                                HorizontalAlignment="Left" Padding="12,5" Margin="0,8,0,0"/>
+                                    </StackPanel>
+
+                                    <!-- Folder mode -->
+                                    <StackPanel Margin="0,4,0,0">
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding SourceEndpoint.Kind}" Value="insertFolder">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <TextBlock Text="Folder with .sql INSERT files"/>
+                                        <Grid Margin="0,2,0,6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox Grid.Column="0"
+                                                     Text="{Binding SourceEndpoint.FolderRootPath, UpdateSourceTrigger=PropertyChanged}"
+                                                     VerticalAlignment="Center"/>
+                                            <Button Grid.Column="1" Content="Browse…"
+                                                    Command="{Binding BrowseFolderSourceCommand}"
+                                                    Padding="10,4" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <TextBlock Text="SQL dialect"/>
+                                        <ComboBox ItemsSource="{Binding SqlDialects}"
+                                                  SelectedItem="{Binding SourceEndpoint.SqlDialect}"
+                                                  Margin="0,2,0,6"/>
+                                        <TextBlock Text="File naming pattern"/>
+                                        <TextBox Text="{Binding SourceEndpoint.FileNaming, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2,0,6"/>
+                                        <TextBlock Text="Search pattern"/>
+                                        <TextBox Text="{Binding SourceEndpoint.SearchPattern, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2,0,6"/>
+                                        <TextBlock Text="Default schema (MySQL database name, or leave empty for dbo/public)"/>
+                                        <TextBox Text="{Binding SourceEndpoint.DefaultSchema, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2,0,0"/>
+                                        <Button Content="Test folder" Command="{Binding TestSourceConnectionCommand}"
+                                                HorizontalAlignment="Left" Padding="12,5" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </GroupBox>
+
+                        <!-- Destination GroupBox -->
+                        <GroupBox Grid.Column="2" Header="Destination" Padding="10">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="Endpoint kind"/>
+                                    <ComboBox ItemsSource="{Binding EndpointKinds}"
+                                              SelectedItem="{Binding DestEndpoint.Kind}"
+                                              Margin="0,2,0,8"/>
+
+                                    <!-- Database mode -->
+                                    <StackPanel Margin="0,4,0,0">
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding DestEndpoint.Kind}" Value="database">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <TextBlock Text="Database provider"/>
+                                        <ComboBox ItemsSource="{Binding DatabaseProviders}"
+                                                  SelectedItem="{Binding DestEndpoint.Provider}"
+                                                  Margin="0,2,0,6"/>
+                                        <TextBlock Text="Connection string"/>
+                                        <Grid Margin="0,2,0,6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox Grid.Column="0"
+                                                     Text="{Binding DestEndpoint.ConnectionString, UpdateSourceTrigger=PropertyChanged}"
+                                                     AcceptsReturn="True" Height="52" TextWrapping="Wrap"
+                                                     VerticalScrollBarVisibility="Auto"/>
+                                            <Button Grid.Column="1" Content="SQL connection…"
+                                                    Command="{Binding BrowseSqlDestinationCommand}"
+                                                    Padding="10,4" Margin="8,0,0,0" VerticalAlignment="Top">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding DestEndpoint.Provider}" Value="sqlserver">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                        </Grid>
+                                        <TextBlock Text="Optional schema filter"/>
+                                        <TextBox Text="{Binding DestEndpoint.SchemaIncludePattern, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2,0,0"/>
+                                        <Button Content="Test connection" Command="{Binding TestDestinationConnectionCommand}"
+                                                HorizontalAlignment="Left" Padding="12,5" Margin="0,8,0,0"/>
+                                    </StackPanel>
+
+                                    <!-- Folder mode -->
+                                    <StackPanel Margin="0,4,0,0">
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding DestEndpoint.Kind}" Value="insertFolder">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <TextBlock Text="Folder root"/>
+                                        <Grid Margin="0,2,0,6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox Grid.Column="0"
+                                                     Text="{Binding DestEndpoint.FolderRootPath, UpdateSourceTrigger=PropertyChanged}"
+                                                     VerticalAlignment="Center"/>
+                                            <Button Grid.Column="1" Content="Browse…"
+                                                    Command="{Binding BrowseFolderDestinationCommand}"
+                                                    Padding="10,4" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <TextBlock Text="SQL dialect"/>
+                                        <ComboBox ItemsSource="{Binding SqlDialects}"
+                                                  SelectedItem="{Binding DestEndpoint.SqlDialect}"
+                                                  Margin="0,2,0,6"/>
+                                        <TextBlock Text="File naming pattern"/>
+                                        <TextBox Text="{Binding DestEndpoint.FileNaming, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2,0,6"/>
+                                        <TextBlock Text="Search pattern"/>
+                                        <TextBox Text="{Binding DestEndpoint.SearchPattern, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2,0,6"/>
+                                        <TextBlock Text="Default schema"/>
+                                        <TextBox Text="{Binding DestEndpoint.DefaultSchema, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2,0,0"/>
+                                        <Button Content="Test folder" Command="{Binding TestDestinationConnectionCommand}"
+                                                HorizontalAlignment="Left" Padding="12,5" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </GroupBox>
+                    </Grid>
+
+                    <!-- Row 2: Compare Options (left) | Tables to compare (right) -->
+                    <Grid Grid.Row="2" Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <GroupBox Grid.Column="0" Header="Compare options" Padding="10">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <CheckBox Grid.Row="0" Grid.ColumnSpan="2"
+                                          Content="Ordinal ignore case (recommended)"
+                                          IsChecked="{Binding OrdinalIgnoreCase}"
+                                          Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="1" Grid.Column="0"
+                                           Text="Max reported diffs / table"
+                                           VerticalAlignment="Center" Margin="0,0,12,6"/>
+                                <TextBox Grid.Row="1" Grid.Column="1"
+                                         Text="{Binding MaxReportedDiffsPerTable}" Margin="0,0,0,6"/>
+                                <TextBlock Grid.Row="2" Grid.Column="0"
+                                           Text="Command timeout (seconds)"
+                                           VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                <TextBox Grid.Row="2" Grid.Column="1"
+                                         Text="{Binding CommandTimeoutSeconds}"/>
+                            </Grid>
+                        </GroupBox>
+
+                        <GroupBox Grid.Column="2" Header="Tables to compare" Padding="10">
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,6" FontSize="12">
+                                    Leave empty to compare every table on the source. Destination schema/table is optional.
+                                </TextBlock>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                    <Button Content="Add row" Command="{Binding AddTableRowCommand}"
+                                            Padding="10,4" Margin="0,0,8,0"/>
+                                    <Button Content="Remove selected" Command="{Binding RemoveTableRowCommand}"
+                                            Padding="10,4" Margin="0,0,8,0"/>
+                                    <Button Content="Discover from source" Command="{Binding DiscoverSourceTablesCommand}"
+                                            Padding="10,4"/>
+                                </StackPanel>
+                                <DataGrid ItemsSource="{Binding TableRows}"
+                                          SelectedItem="{Binding SelectedTableRow}"
+                                          AutoGenerateColumns="False"
+                                          CanUserAddRows="False"
+                                          MinHeight="160"
+                                          HeadersVisibility="Column">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Source schema"
+                                                            Binding="{Binding SourceSchema, UpdateSourceTrigger=PropertyChanged}"
+                                                            Width="*"/>
+                                        <DataGridTextColumn Header="Source table"
+                                                            Binding="{Binding SourceTable, UpdateSourceTrigger=PropertyChanged}"
+                                                            Width="*"/>
+                                        <DataGridTextColumn Header="Dest schema (optional)"
+                                                            Binding="{Binding DestSchema, UpdateSourceTrigger=PropertyChanged}"
+                                                            Width="*"/>
+                                        <DataGridTextColumn Header="Dest table (optional)"
+                                                            Binding="{Binding DestTable, UpdateSourceTrigger=PropertyChanged}"
+                                                            Width="*"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </StackPanel>
+                        </GroupBox>
+                    </Grid>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ═══════════ Results Tab ═══════════ -->
+            <TabItem Header="Results">
+                <Grid Margin="12,8,12,8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Tables included in sync:" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="SemiBold"/>
+                        <Button Content="Select all tables" Command="{Binding SelectAllTablesForSyncCommand}" Padding="10,4" Margin="0,0,8,0"/>
+                        <Button Content="Clear tables" Command="{Binding ClearTablesForSyncCommand}" Padding="10,4" Margin="0,0,16,0"/>
+                        <TextBlock Text="Rows (selected table):" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="SemiBold"/>
+                        <Button Content="Select all rows" Command="{Binding SelectAllRowDiffsCommand}" Padding="10,4" Margin="0,0,8,0"/>
+                        <Button Content="Clear rows" Command="{Binding ClearRowDiffsCommand}" Padding="10,4"/>
+                    </StackPanel>
+
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <GroupBox Grid.Column="0" Header="Compare results (per table)" Padding="8">
+                            <DockPanel>
+                                <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="160"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Filter:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBox Grid.Column="1" Text="{Binding TableFilterText, UpdateSourceTrigger=PropertyChanged}"
+                                             MinWidth="100" VerticalAlignment="Center" Margin="0,0,12,0"
+                                             ToolTip="Search source, destination, status, note, or counts"/>
+                                    <TextBlock Grid.Column="2" Text="Show:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <ComboBox Grid.Column="3" ItemsSource="{Binding TableFilterPresetOptions}"
+                                              SelectedItem="{Binding TableFilterPreset}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                    <Button Grid.Column="4" Content="Reset filters" Command="{Binding ClearTableFiltersCommand}"
+                                            Padding="10,4" VerticalAlignment="Center"/>
+                                </Grid>
+                                <DataGrid ItemsSource="{Binding FilteredResultRows}"
+                                      SelectedItem="{Binding SelectedCompareResult, Mode=TwoWay}"
+                                      AutoGenerateColumns="False"
+                                      HeadersVisibility="Column"
+                                      CanUserAddRows="False"
+                                      SelectionMode="Single"
+                                      IsReadOnly="False">
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="Sync" Width="52">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <CheckBox IsChecked="{Binding IncludeInSync, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Source" Binding="{Binding Source}" Width="*" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="Destination" Binding="{Binding Destination}" Width="*" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="100" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="+Src" Binding="{Binding OnlySource}" Width="56" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="+Dst" Binding="{Binding OnlyDestination}" Width="56" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="Val Δ" Binding="{Binding ValueDiffs}" Width="56" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="↑Ins" Binding="{Binding SyncInserted}" Width="52" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="~Upd" Binding="{Binding SyncUpdated}" Width="52" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="-Del" Binding="{Binding SyncDeleted}" Width="52" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="Note" Binding="{Binding Note}" Width="2*" IsReadOnly="True"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            </DockPanel>
+                        </GroupBox>
+
+                        <GroupBox Grid.Column="2" Header="Differing rows (sample)" Padding="8"
+                                  ToolTip="If not all differences are listed, increase Max reported diffs / table on the Setup tab and run compare again.">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,8" FontSize="12"
+                                           Text="Select a table on the left, then select a row below to expand per-column source vs destination values (value-difference rows). Row list is limited by Max reported diffs / table."/>
+                                <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Filter:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBox Grid.Column="1" Text="{Binding RowDiffFilterText, UpdateSourceTrigger=PropertyChanged}"
+                                             MinWidth="80" VerticalAlignment="Center" Margin="0,0,12,0"
+                                             ToolTip="Search kind, key, or column details"/>
+                                    <TextBlock Grid.Column="2" Text="Kind:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <ComboBox Grid.Column="3" ItemsSource="{Binding RowDiffKindPresetOptions}"
+                                              SelectedItem="{Binding RowDiffKindPreset}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                    <Button Grid.Column="4" Content="Reset" Command="{Binding ClearRowDiffFiltersCommand}"
+                                            Padding="10,4" VerticalAlignment="Center"/>
+                                </Grid>
+                                <DataGrid ItemsSource="{Binding RowDiffsView}"
+                                          AutoGenerateColumns="False"
+                                          HeadersVisibility="Column"
+                                          CanUserAddRows="False"
+                                          IsReadOnly="False"
+                                          RowDetailsVisibilityMode="VisibleWhenSelected"
+                                          SelectionMode="Single">
+                                    <DataGrid.RowDetailsTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#f4f6f8" Padding="10,8" Margin="4,0,4,8" CornerRadius="4">
+                                                <StackPanel>
+                                                    <TextBlock Text="Column-level values (source vs destination)" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                                    <DataGrid AutoGenerateColumns="False" HeadersVisibility="Column" IsReadOnly="True"
+                                                              CanUserAddRows="False" MaxHeight="240" GridLinesVisibility="Horizontal">
+                                                        <DataGrid.Style>
+                                                            <Style TargetType="DataGrid">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding ColumnDiffs.Count}" Value="0">
+                                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </DataGrid.Style>
+                                                        <DataGrid.Columns>
+                                                            <DataGridTextColumn Header="Column" Binding="{Binding ColumnName}" Width="*" MinWidth="100"/>
+                                                            <DataGridTextColumn Header="Source" Binding="{Binding SourceValue}" Width="2*" MinWidth="120"/>
+                                                            <DataGridTextColumn Header="Destination" Binding="{Binding DestinationValue}" Width="2*" MinWidth="120"/>
+                                                        </DataGrid.Columns>
+                                                    </DataGrid>
+                                                    <TextBlock TextWrapping="Wrap" FontStyle="Italic" Foreground="#666" Margin="0,6,0,0">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding ColumnDiffs.Count}" Value="0">
+                                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                        No per-column breakdown for this row (e.g. insert-missing or delete-extra).
+                                                    </TextBlock>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </DataGrid.RowDetailsTemplate>
+                                    <DataGrid.Columns>
+                                        <DataGridTemplateColumn Header="Sync" Width="52">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <CheckBox IsChecked="{Binding IncludeInSync, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTextColumn Header="Kind" Binding="{Binding KindLabel}" Width="2*" IsReadOnly="True"/>
+                                        <DataGridTextColumn Header="Key" Binding="{Binding KeyDisplay}" Width="*" IsReadOnly="True"/>
+                                        <DataGridTextColumn Header="Summary" Binding="{Binding Detail}" Width="2*" IsReadOnly="True"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                                <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="DarkOrange" FontSize="12"
+                                           Visibility="{Binding SelectedCompareResult.HasCountsButNoRowSample, Converter={StaticResource BoolToVisibilityConverter}}">
+                                    Counts show differences but no sample rows are in this list. Increase <Run FontWeight="SemiBold">Max reported diffs / table</Run> on the Setup tab and run compare again.
+                                </TextBlock>
+                            </DockPanel>
+                        </GroupBox>
+                    </Grid>
+
+                    <!-- Sync options bar -->
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
+                        <TextBlock Text="Sync options:" VerticalAlignment="Center" Margin="0,0,10,0"
+                                   FontWeight="SemiBold"/>
+                        <CheckBox Content="Insert missing" IsChecked="{Binding SyncInsertMissing}"
+                                  VerticalAlignment="Center" Margin="0,0,12,0"/>
+                        <CheckBox Content="Update changed" IsChecked="{Binding SyncUpdateChanged}"
+                                  VerticalAlignment="Center" Margin="0,0,12,0"/>
+                        <CheckBox Content="Delete extra (destructive)" IsChecked="{Binding SyncDeleteExtra}"
+                                  VerticalAlignment="Center" Margin="0,0,16,0" Foreground="DarkRed"/>
+                        <Button Content="Sync to destination…" Command="{Binding SyncToDestinationCommand}"
+                                Padding="14,5" FontWeight="SemiBold"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>
