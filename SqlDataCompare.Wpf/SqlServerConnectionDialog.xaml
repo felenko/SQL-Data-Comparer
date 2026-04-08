@@ -8,7 +8,10 @@
         MinWidth="440"
         ResizeMode="CanResizeWithGrip"
         WindowStartupLocation="CenterOwner"
-        ShowInTaskbar="False">
+        ShowInTaskbar="False"
+        Background="{StaticResource PanelBrush}"
+        Foreground="{StaticResource TextPrimaryBrush}"
+        FontFamily="Segoe UI">
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -16,7 +19,8 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="#444" Margin="0,0,0,12">
+        <TextBlock Grid.Row="0" TextWrapping="Wrap"
+                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,12">
             <Run>Similar to SQL Server Management Studio. Builds a connection string for Microsoft SQL Server only.</Run>
             <LineBreak/><LineBreak/>
             <Run FontStyle="Italic">If you see 'error occurred during login process (provider SSL...)', turn on Trust server certificate below (common for local SQL, Docker, or self-signed TLS), or ask your admin for a certificate that matches the server name.</Run>

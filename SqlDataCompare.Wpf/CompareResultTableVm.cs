@@ -131,6 +131,14 @@ public partial class RowDiffSelectableVm : ObservableObject
         _ => Kind.ToString(),
     };
 
+    public string ChangeIndicatorLabel => Kind switch
+    {
+        RowDifferenceKind.MissingInDestination => "+",
+        RowDifferenceKind.MissingInSource      => "−",
+        RowDifferenceKind.ValueMismatch        => "≠",
+        _                                      => "?",
+    };
+
     public string SelectionKey => SyncSelection.FormatRowKey(Kind, KeyDisplay);
 
     public static RowDiffSelectableVm From(RowDifference d)

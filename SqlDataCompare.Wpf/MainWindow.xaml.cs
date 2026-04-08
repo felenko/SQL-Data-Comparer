@@ -1,6 +1,7 @@
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 
 namespace SqlDataCompare.Wpf;
 
@@ -14,6 +15,21 @@ public partial class MainWindow : Window
 
     private void Exit_Click(object sender, RoutedEventArgs e) =>
         System.Windows.Application.Current.Shutdown();
+
+    private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left)
+            DragMove();
+    }
+
+    private void MinimizeButton_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState.Minimized;
+
+    private void MaximizeButton_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    private void CloseButton_Click(object sender, RoutedEventArgs e) =>
+        Close();
 
     private void CompareResultsGrid_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {

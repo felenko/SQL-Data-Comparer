@@ -45,6 +45,9 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty] private TablePairEditRow? selectedTableRow;
 
+    /// <summary>Main window tab: 0 = Setup, 1 = Results.</summary>
+    [ObservableProperty] private int mainTabIndex;
+
     public ObservableCollection<CompareResultTableVm> ResultRows { get; } = new();
 
     [ObservableProperty] private CompareResultTableVm? selectedCompareResult;
@@ -82,6 +85,13 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>Filtered view over <see cref="CompareResultTableVm.RowDiffs"/> for the selected table; null when nothing selected.</summary>
     [ObservableProperty] private ICollectionView? rowDiffsView;
+
+    [ObservableProperty] private RowDiffSelectableVm? selectedRowDiff;
+
+    [ObservableProperty] private string differenceSummaryText = "";
+    [ObservableProperty] private string currentPositionText = "";
+
+    private int _currentRowDiffIndex = -1;
 
     public MainViewModel()
     {
@@ -151,10 +161,13 @@ public partial class MainViewModel : ObservableObject
     partial void OnSelectedCompareResultChanged(CompareResultTableVm? value)
     {
         SetBulkSelectedRowDiffs([]);
+        _currentRowDiffIndex = -1;
+        SelectedRowDiff = null;
 
         if (value is null)
         {
             RowDiffsView = null;
+            CurrentPositionText = "";
             return;
         }
 
@@ -163,6 +176,73 @@ public partial class MainViewModel : ObservableObject
         view.Filter = RowDiffFilter;
         view.Refresh();
         RowDiffsView = view;
+        UpdatePositionText();
+    }
+
+    private List<RowDiffSelectableVm> GetVisibleRowDiffs()
+    {
+        if (RowDiffsView is null)
+            return [];
+        return RowDiffsView.Cast<RowDiffSelectableVm>().ToList();
+    }
+
+    private void UpdatePositionText()
+    {
+        var items = GetVisibleRowDiffs();
+        if (items.Count == 0)
+        {
+            CurrentPositionText = "0 of 0";
+            return;
+        }
+        var pos = _currentRowDiffIndex >= 0 ? _currentRowDiffIndex + 1 : 0;
+        CurrentPositionText = $"{pos} of {items.Count}";
+    }
+
+    private void UpdateDifferenceSummaryText()
+    {
+        if (ResultRows.Count == 0)
+        {
+            DifferenceSummaryText = "";
+            return;
+        }
+        var diffTables = ResultRows.Count(r => r.Status is "Different" or "SampledDifferent");
+        var totalRows = ResultRows.Sum(r => r.OnlySource + r.OnlyDestination + r.ValueDiffs);
+        if (diffTables == 0 && totalRows == 0)
+            DifferenceSummaryText = "No differences found";
+        else
+            DifferenceSummaryText = $"{totalRows:N0} Row Diffs — {diffTables} Table{(diffTables != 1 ? "s" : "")}";
+    }
+
+    [RelayCommand]
+    private void PreviousDifference()
+    {
+        var items = GetVisibleRowDiffs();
+        if (items.Count == 0) return;
+        _currentRowDiffIndex = _currentRowDiffIndex <= 0 ? items.Count - 1 : _currentRowDiffIndex - 1;
+        SelectedRowDiff = items[_currentRowDiffIndex];
+        UpdatePositionText();
+    }
+
+    [RelayCommand]
+    private void NextDifference()
+    {
+        var items = GetVisibleRowDiffs();
+        if (items.Count == 0) return;
+        _currentRowDiffIndex = _currentRowDiffIndex >= items.Count - 1 ? 0 : _currentRowDiffIndex + 1;
+        SelectedRowDiff = items[_currentRowDiffIndex];
+        UpdatePositionText();
+    }
+
+    partial void OnSelectedRowDiffChanged(RowDiffSelectableVm? value)
+    {
+        if (value is null) return;
+        var items = GetVisibleRowDiffs();
+        var idx = items.IndexOf(value);
+        if (idx >= 0)
+        {
+            _currentRowDiffIndex = idx;
+            UpdatePositionText();
+        }
     }
 
     private bool CompareTableFilter(object obj)
@@ -536,7 +616,11 @@ public partial class MainViewModel : ObservableObject
         SelectedCompareResult = null;
         SetBulkSelectedCompareResults([]);
         TableFilterPreset = "All";
+        TableFilterText = "";
         RowDiffKindPreset = "All kinds";
+        RowDiffFilterText = "";
+        DifferenceSummaryText = "";
+        CurrentPositionText = "";
         _filteredResultRows.Refresh();
         CompareProject project;
         try
@@ -592,6 +676,12 @@ public partial class MainViewModel : ObservableObject
             var svc = new DataCompareService();
             var result = await svc.RunAsync(project, Logger, _compareCts.Token, progress);
 
+            // Progress should have filled ResultRows; reconcile if anything drifted (e.g. filter race) or rows were missed.
+            if (ResultRows.Count != result.Tables.Count)
+                ReplaceResultRowsFromCompare(result);
+
+            MainTabIndex = 1;
+
             var diff = result.Tables.Count(x =>
                 x.Status is TableCompareStatus.Different or TableCompareStatus.SampledDifferent);
             var err = result.Tables.Count(x => x.Status == TableCompareStatus.Error);
@@ -626,7 +716,18 @@ public partial class MainViewModel : ObservableObject
             CompareProgressIndeterminate = false;
             CompareProgressPercent = 0;
             CompareTimingText = "";
+            UpdateDifferenceSummaryText();
         }
+    }
+
+    private void ReplaceResultRowsFromCompare(ProjectCompareResult result)
+    {
+        ResultRows.Clear();
+        SelectedCompareResult = null;
+        SetBulkSelectedCompareResults([]);
+        foreach (var t in result.Tables)
+            ResultRows.Add(CompareResultTableVm.From(t));
+        _filteredResultRows.Refresh();
     }
 
     private void OnCompareProgress(CompareProgressInfo p)
