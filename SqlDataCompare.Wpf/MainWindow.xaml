@@ -856,8 +856,9 @@
                                        TextWrapping="Wrap"
                                        Foreground="{StaticResource TextMutedBrush}"
                                        Margin="10,4,10,2" FontSize="11">
-                                Select a table on the left to see its differing rows.
-                                Ctrl/Shift+click for multi-select. Per-column values shown below each row.
+                                Select a table on the left. Each row shows the change kind and key; value-changed rows list
+                                <Run FontWeight="SemiBold">every differing column</Run> with source vs destination (green/red tint).
+                                A text summary is in the “Column differences” column. Scroll within a row if many columns.
                             </TextBlock>
 
                             <!-- Warning: counts but no rows -->
@@ -877,6 +878,7 @@
                                       HeadersVisibility="Column"
                                       CanUserAddRows="False"
                                       IsReadOnly="False"
+                                      EnableRowVirtualization="False"
                                       RowDetailsVisibilityMode="Visible"
                                       SelectionMode="Extended"
                                       SelectionUnit="FullRow"
@@ -912,7 +914,8 @@
                                                            Margin="0,0,0,6"/>
                                                 <DataGrid AutoGenerateColumns="False" HeadersVisibility="Column"
                                                           IsReadOnly="True" CanUserAddRows="False"
-                                                          MaxHeight="220" GridLinesVisibility="Horizontal">
+                                                          EnableRowVirtualization="False"
+                                                          MaxHeight="280" GridLinesVisibility="Horizontal">
                                                     <DataGrid.Style>
                                                         <Style TargetType="DataGrid" BasedOn="{StaticResource {x:Type DataGrid}}">
                                                             <Style.Triggers>
@@ -926,9 +929,34 @@
                                                         <Binding Path="ColumnDiffs"/>
                                                     </DataGrid.ItemsSource>
                                                     <DataGrid.Columns>
-                                                        <DataGridTextColumn Header="Column"      Binding="{Binding ColumnName}"      Width="*"  MinWidth="100"/>
-                                                        <DataGridTextColumn Header="Source"      Binding="{Binding SourceValue}"     Width="2*" MinWidth="120"/>
-                                                        <DataGridTextColumn Header="Destination" Binding="{Binding DestinationValue}" Width="2*" MinWidth="120"/>
+                                                        <DataGridTextColumn Header="Column" Binding="{Binding ColumnName}" Width="*" MinWidth="100" IsReadOnly="True">
+                                                            <DataGridTextColumn.ElementStyle>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Padding" Value="4,3"/>
+                                                                    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                                                                </Style>
+                                                            </DataGridTextColumn.ElementStyle>
+                                                        </DataGridTextColumn>
+                                                        <DataGridTextColumn Header="Source" Binding="{Binding SourceValue}" Width="2*" MinWidth="120" IsReadOnly="True">
+                                                            <DataGridTextColumn.ElementStyle>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Padding" Value="4,3"/>
+                                                                    <Setter Property="Background" Value="{StaticResource DiffSourceCellBgBrush}"/>
+                                                                    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                                                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                                                </Style>
+                                                            </DataGridTextColumn.ElementStyle>
+                                                        </DataGridTextColumn>
+                                                        <DataGridTextColumn Header="Destination" Binding="{Binding DestinationValue}" Width="2*" MinWidth="120" IsReadOnly="True">
+                                                            <DataGridTextColumn.ElementStyle>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Padding" Value="4,3"/>
+                                                                    <Setter Property="Background" Value="{StaticResource DiffDestCellBgBrush}"/>
+                                                                    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                                                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                                                </Style>
+                                                            </DataGridTextColumn.ElementStyle>
+                                                        </DataGridTextColumn>
                                                     </DataGrid.Columns>
                                                 </DataGrid>
                                                 <TextBlock TextWrapping="Wrap" FontStyle="Italic"
@@ -989,8 +1017,32 @@
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
-                                    <DataGridTextColumn Header="Kind"   Binding="{Binding KindLabel}"  Width="2*" IsReadOnly="True"/>
-                                    <DataGridTextColumn Header="Key"    Binding="{Binding KeyDisplay}" Width="*"  IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="Kind"   Binding="{Binding KindLabel}"  Width="160" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="Key"    Binding="{Binding KeyDisplay}" Width="120" IsReadOnly="True"/>
+                                    <DataGridTemplateColumn Header="Column differences (summary)" Width="2*" MinWidth="200">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Detail}"
+                                                           TextWrapping="Wrap"
+                                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                                           FontSize="12"
+                                                           Padding="0,2"
+                                                           MaxHeight="120"
+                                                           VerticalAlignment="Top">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding Detail}" Value="">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
                         </DockPanel>

@@ -50,6 +50,10 @@
     <SolidColorBrush x:Key="RowDeleteBrush"     Color="#331A1A"/>
     <SolidColorBrush x:Key="RowChangeBrush"     Color="#312B14"/>
 
+    <!-- Per-column compare (nested grid): source vs destination cell backgrounds -->
+    <SolidColorBrush x:Key="DiffSourceCellBgBrush" Color="#1A3328"/>
+    <SolidColorBrush x:Key="DiffDestCellBgBrush"   Color="#331F1F"/>
+
     <!-- ═══════════════════════════════════════════════
          BUTTON
     ═══════════════════════════════════════════════ -->

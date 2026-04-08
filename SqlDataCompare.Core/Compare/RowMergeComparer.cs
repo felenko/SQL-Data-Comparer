@@ -51,13 +51,15 @@ public static class RowMergeComparer
             if (cmp < 0)
             {
                 onlySrc++;
-                AddSample(RowDifferenceKind.MissingInDestination, ks, null, ref sample, maxReportedDiffs);
+                AddMissingSample(RowDifferenceKind.MissingInDestination, ks, srcSorted[i], sortKeysSrc, sortKeysDst,
+                    valueColumns, ref sample, maxReportedDiffs);
                 i++;
             }
             else if (cmp > 0)
             {
                 onlyDst++;
-                AddSample(RowDifferenceKind.MissingInSource, kd, null, ref sample, maxReportedDiffs);
+                AddMissingSample(RowDifferenceKind.MissingInSource, kd, dstSorted[j], sortKeysSrc, sortKeysDst,
+                    valueColumns, ref sample, maxReportedDiffs);
                 j++;
             }
             else
@@ -105,8 +107,8 @@ public static class RowMergeComparer
                 mergeProgress?.Report((i + j, mergeTotal));
             }
             onlySrc++;
-            AddSample(RowDifferenceKind.MissingInDestination, KeyString(srcSorted[i], sortKeysSrc), null, ref sample,
-                maxReportedDiffs);
+            AddMissingSample(RowDifferenceKind.MissingInDestination, KeyString(srcSorted[i], sortKeysSrc), srcSorted[i],
+                sortKeysSrc, sortKeysDst, valueColumns, ref sample, maxReportedDiffs);
             i++;
         }
 
@@ -118,8 +120,8 @@ public static class RowMergeComparer
                 mergeProgress?.Report((i + j, mergeTotal));
             }
             onlyDst++;
-            AddSample(RowDifferenceKind.MissingInSource, KeyString(dstSorted[j], sortKeysDst), null, ref sample,
-                maxReportedDiffs);
+            AddMissingSample(RowDifferenceKind.MissingInSource, KeyString(dstSorted[j], sortKeysDst), dstSorted[j],
+                sortKeysSrc, sortKeysDst, valueColumns, ref sample, maxReportedDiffs);
             j++;
         }
 
@@ -172,20 +174,102 @@ public static class RowMergeComparer
         return rows is List<Dictionary<string, object?>> l ? l : rows.ToList();
     }
 
-    private static void AddSample(
+    /// <summary>
+    /// Adds a sample for a row only on source or only on destination, with every projected column shown
+    /// (keys + mapped value columns) so the UI can list full row values on the present side.
+    /// </summary>
+    private static void AddMissingSample(
         RowDifferenceKind kind,
         string key,
-        IReadOnlyList<ColumnMismatch>? mismatches,
+        Dictionary<string, object?> row,
+        IReadOnlyList<string> sourceKeyColumns,
+        IReadOnlyList<string> destKeyColumns,
+        IReadOnlyList<(string SourceColumn, string DestinationColumn)> valueColumns,
         ref List<RowDifference> list,
         int cap)
     {
         if (list.Count >= cap) return;
+        var mismatches = BuildColumnListForMissingRow(kind, row, sourceKeyColumns, destKeyColumns, valueColumns);
         list.Add(new RowDifference
         {
             KeyDisplay = key,
             Kind = kind,
             ColumnMismatches = mismatches,
         });
+    }
+
+    /// <summary>
+    /// One row per column in the merge projection: for missing-on-destination, source values and placeholder on dest;
+    /// for missing-on-source, placeholder on source and destination values.
+    /// </summary>
+    private static List<ColumnMismatch> BuildColumnListForMissingRow(
+        RowDifferenceKind kind,
+        Dictionary<string, object?> row,
+        IReadOnlyList<string> sourceKeyColumns,
+        IReadOnlyList<string> destKeyColumns,
+        IReadOnlyList<(string SourceColumn, string DestinationColumn)> valueColumns)
+    {
+        const string MissingSidePlaceholder = "—";
+        var list = new List<ColumnMismatch>();
+
+        if (kind == RowDifferenceKind.MissingInDestination)
+        {
+            for (var k = 0; k < sourceKeyColumns.Count; k++)
+            {
+                var sk = sourceKeyColumns[k];
+                row.TryGetValue(sk, out var v);
+                var dk = k < destKeyColumns.Count ? destKeyColumns[k] : sk;
+                var label = string.Equals(sk, dk, StringComparison.Ordinal) ? sk : $"{sk} → {dk}";
+                list.Add(new ColumnMismatch
+                {
+                    Column = label,
+                    SourceValue = FormatVal(v),
+                    DestinationValue = MissingSidePlaceholder,
+                });
+            }
+
+            foreach (var (sc, dc) in valueColumns)
+            {
+                row.TryGetValue(sc, out var v);
+                var label = string.Equals(sc, dc, StringComparison.Ordinal) ? sc : $"{sc} → {dc}";
+                list.Add(new ColumnMismatch
+                {
+                    Column = label,
+                    SourceValue = FormatVal(v),
+                    DestinationValue = MissingSidePlaceholder,
+                });
+            }
+        }
+        else
+        {
+            for (var k = 0; k < destKeyColumns.Count; k++)
+            {
+                var dk = destKeyColumns[k];
+                row.TryGetValue(dk, out var v);
+                var sk = k < sourceKeyColumns.Count ? sourceKeyColumns[k] : dk;
+                var label = string.Equals(sk, dk, StringComparison.Ordinal) ? dk : $"{sk} → {dk}";
+                list.Add(new ColumnMismatch
+                {
+                    Column = label,
+                    SourceValue = MissingSidePlaceholder,
+                    DestinationValue = FormatVal(v),
+                });
+            }
+
+            foreach (var (sc, dc) in valueColumns)
+            {
+                row.TryGetValue(dc, out var v);
+                var label = string.Equals(sc, dc, StringComparison.Ordinal) ? dc : $"{sc} → {dc}";
+                list.Add(new ColumnMismatch
+                {
+                    Column = label,
+                    SourceValue = MissingSidePlaceholder,
+                    DestinationValue = FormatVal(v),
+                });
+            }
+        }
+
+        return list;
     }
 
     private static string KeyString(Dictionary<string, object?> row, IReadOnlyList<string> keys)
