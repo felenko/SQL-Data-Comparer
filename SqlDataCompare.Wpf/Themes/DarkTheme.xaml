@@ -438,11 +438,11 @@
          MENU
     ═══════════════════════════════════════════════ -->
     <Style TargetType="Menu">
-        <Setter Property="Background"       Value="{StaticResource PanelHeaderBrush}"/>
+        <Setter Property="Background"       Value="Transparent"/>
         <Setter Property="Foreground"       Value="{StaticResource TextPrimaryBrush}"/>
         <Setter Property="FontSize"         Value="13"/>
         <Setter Property="FontFamily"       Value="Segoe UI"/>
-        <Setter Property="BorderThickness"  Value="0,0,0,1"/>
+        <Setter Property="BorderThickness"  Value="0"/>
         <Setter Property="BorderBrush"      Value="{StaticResource SeparatorBrush}"/>
     </Style>
 
@@ -607,6 +607,44 @@
     ═══════════════════════════════════════════════ -->
     <Style TargetType="ScrollBar">
         <Setter Property="Background" Value="{StaticResource PanelBrush}"/>
+    </Style>
+
+    <!-- ═══════════════════════════════════════════════
+         TITLE BAR: compact icon + label buttons (after menu)
+    ═══════════════════════════════════════════════ -->
+    <Style x:Key="TitleBarToolbarButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+        <Setter Property="Padding" Value="8,4"/>
+        <Setter Property="Margin" Value="2,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="FontFamily" Value="Segoe UI"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="3"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#2A3348"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#1E2533"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.38"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
 </ResourceDictionary>

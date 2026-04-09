@@ -44,30 +44,100 @@
                                VerticalAlignment="Center"/>
                 </StackPanel>
 
-                <!-- Menu bar (center-left area) -->
-                <Menu Grid.Column="1" VerticalAlignment="Center"
-                      shell:WindowChrome.IsHitTestVisibleInChrome="True"
-                      Background="Transparent" BorderThickness="0"
-                      Margin="16,0,0,0">
-                    <MenuItem Header="_File"
-                              Foreground="{StaticResource TextSecondaryBrush}"
-                              Background="Transparent">
-                        <MenuItem Header="_New"      Command="{Binding NewProjectCommand}"/>
-                        <MenuItem Header="_Open…"    Command="{Binding OpenProjectCommand}"/>
-                        <MenuItem Header="_Save"     Command="{Binding SaveProjectCommand}"/>
-                        <MenuItem Header="Save _As…" Command="{Binding SaveProjectAsCommand}"/>
-                        <Separator/>
-                        <MenuItem Header="E_xit" Click="Exit_Click"/>
-                    </MenuItem>
-                    <MenuItem Header="_Compare"
-                              Foreground="{StaticResource TextSecondaryBrush}"
-                              Background="Transparent">
-                        <MenuItem Header="_Run Compare"          Command="{Binding RunCompareCommand}" FontWeight="SemiBold"/>
-                        <MenuItem Header="_Stop Compare"         Command="{Binding CancelCompareCommand}"/>
-                        <Separator/>
-                        <MenuItem Header="_Sync to Destination…" Command="{Binding SyncToDestinationCommand}"/>
-                    </MenuItem>
-                </Menu>
+                <!-- Menu + quick toolbar -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                    <Menu shell:WindowChrome.IsHitTestVisibleInChrome="True"
+                          Background="Transparent" BorderThickness="0">
+                        <Menu.Resources>
+                            <SolidColorBrush x:Key="{x:Static SystemColors.MenuColorKey}" Color="#252B36"/>
+                            <SolidColorBrush x:Key="{x:Static SystemColors.MenuBarColorKey}" Color="#232A38"/>
+                            <SolidColorBrush x:Key="{x:Static SystemColors.MenuTextBrushKey}" Color="#D8DCE8"/>
+                            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#374F78"/>
+                            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#D8DCE8"/>
+                            <Style TargetType="MenuItem">
+                                <Setter Property="BorderThickness" Value="0"/>
+                                <Setter Property="Background" Value="Transparent"/>
+                            </Style>
+                        </Menu.Resources>
+                        <MenuItem Header="_File"
+                                  Foreground="{StaticResource TextSecondaryBrush}"
+                                  Background="Transparent">
+                            <MenuItem Header="_New"      Command="{Binding NewProjectCommand}"/>
+                            <MenuItem Header="_Open…"    Command="{Binding OpenProjectCommand}"/>
+                            <MenuItem Header="_Save"     Command="{Binding SaveProjectCommand}"/>
+                            <MenuItem Header="Save _As…" Command="{Binding SaveProjectAsCommand}"/>
+                            <Separator/>
+                            <MenuItem Header="E_xit" Click="Exit_Click"/>
+                        </MenuItem>
+                        <MenuItem Header="_Compare"
+                                  Foreground="{StaticResource TextSecondaryBrush}"
+                                  Background="Transparent">
+                            <MenuItem Header="_Run Compare"          Command="{Binding RunCompareCommand}" FontWeight="SemiBold"/>
+                            <MenuItem Header="_Stop Compare"         Command="{Binding CancelCompareCommand}"/>
+                            <Separator/>
+                            <MenuItem Header="_Sync to Destination…" Command="{Binding SyncToDestinationCommand}"/>
+                        </MenuItem>
+                    </Menu>
+
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
+                        <Button Style="{StaticResource TitleBarToolbarButtonStyle}"
+                                Command="{Binding OpenProjectCommand}"
+                                IsEnabled="{Binding IsBusy, Converter={StaticResource InvertedBooleanConverter}}"
+                                shell:WindowChrome.IsHitTestVisibleInChrome="True"
+                                ToolTip="Open project (Ctrl+O)">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8E5;" FontSize="15"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Open" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Button Style="{StaticResource TitleBarToolbarButtonStyle}"
+                                Command="{Binding SaveProjectCommand}"
+                                IsEnabled="{Binding IsBusy, Converter={StaticResource InvertedBooleanConverter}}"
+                                shell:WindowChrome.IsHitTestVisibleInChrome="True"
+                                ToolTip="Save project">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74E;" FontSize="15"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Save" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <Grid shell:WindowChrome.IsHitTestVisibleInChrome="True" MinWidth="128">
+                            <Button Style="{StaticResource TitleBarToolbarButtonStyle}"
+                                    Command="{Binding RunCompareCommand}"
+                                    HorizontalAlignment="Left"
+                                    Visibility="{Binding IsComparing, Converter={StaticResource InverseBoolToVisibilityConverter}}"
+                                    ToolTip="Run compare">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE768;" FontSize="15"
+                                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock Text="Compare" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource TitleBarToolbarButtonStyle}"
+                                    Command="{Binding CancelCompareCommand}"
+                                    HorizontalAlignment="Left"
+                                    Visibility="{Binding IsComparing, Converter={StaticResource BoolToVisibilityConverter}}"
+                                    ToolTip="Stop compare">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE71A;" FontSize="15"
+                                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock Text="Stop compare" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                        <Button Style="{StaticResource TitleBarToolbarButtonStyle}"
+                                Command="{Binding SyncToDestinationCommand}"
+                                shell:WindowChrome.IsHitTestVisibleInChrome="True"
+                                ToolTip="Sync to destination">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE895;" FontSize="15"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Sync" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </StackPanel>
 
                 <!-- Window chrome buttons -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal"

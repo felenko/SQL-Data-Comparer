@@ -312,10 +312,6 @@ public static class McpDatabaseTools
             return JsonSerializer.Serialize(new { error = "Invalid projectJson.", detail = ex.Message }, JsonOpts);
         }
 
-        if (project.Destination is not DatabaseEndpoint)
-            return JsonSerializer.Serialize(
-                new { error = "Sync requires a database destination (JSON kind: database), not an INSERT folder." }, JsonOpts);
-
         if (!insertMissing && !updateChanged && !deleteExtra)
             return JsonSerializer.Serialize(
                 new

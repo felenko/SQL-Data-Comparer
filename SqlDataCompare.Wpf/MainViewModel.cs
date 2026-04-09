@@ -118,6 +118,20 @@ public partial class MainViewModel : ObservableObject
 
     private Stopwatch? _compareStopwatch;
     private Stopwatch? _syncStopwatch;
+
+    // ETA sliding window: stores per-table durations (seconds) for the last N completed tables.
+    // Recent table durations are weighted more heavily than the global average so that a run
+    // starting with many fast small tables doesn't permanently under-estimate remaining time.
+    private readonly Queue<double> _compareEtaWindow = new();
+    private int _compareEtaLastCompleted;
+    private double _compareEtaLastElapsedSeconds;
+
+    private readonly Queue<double> _syncEtaWindow = new();
+    private int _syncEtaLastTableIndex;
+    private double _syncEtaLastElapsedSeconds;
+
+    private const int EtaWindowSize = 8;       // track the most recent 8 tables
+    private const double EtaMinElapsedSeconds = 8; // don't show ETA before 8 s of data
     private CancellationTokenSource? _compareCts;
 
     [ObservableProperty] private bool syncInsertMissing = true;
@@ -670,6 +684,9 @@ public partial class MainViewModel : ObservableObject
         CompareTimingText = "";
         StatusMessage = "Connecting and listing tables…";
         _compareStopwatch = Stopwatch.StartNew();
+        _compareEtaWindow.Clear();
+        _compareEtaLastCompleted = 0;
+        _compareEtaLastElapsedSeconds = 0;
         var progress = new Progress<CompareProgressInfo>(OnCompareProgress);
         try
         {
@@ -754,7 +771,22 @@ public partial class MainViewModel : ObservableObject
         }
 
         var elapsed = _compareStopwatch?.Elapsed ?? TimeSpan.Zero;
-        var timingLine = FormatCompareTimingLine(elapsed, p.CompletedTables, p.TotalTables);
+        // Feed the sliding window whenever more tables have completed since the last update.
+        if (p.CompletedTables > _compareEtaLastCompleted && elapsed.TotalSeconds > _compareEtaLastElapsedSeconds)
+        {
+            var deltaSec = elapsed.TotalSeconds - _compareEtaLastElapsedSeconds;
+            var deltaCount = p.CompletedTables - _compareEtaLastCompleted;
+            var secPerTable = deltaSec / deltaCount;
+            for (var n = 0; n < deltaCount; n++)
+            {
+                _compareEtaWindow.Enqueue(secPerTable);
+                if (_compareEtaWindow.Count > EtaWindowSize)
+                    _compareEtaWindow.Dequeue();
+            }
+            _compareEtaLastCompleted = p.CompletedTables;
+            _compareEtaLastElapsedSeconds = elapsed.TotalSeconds;
+        }
+        var timingLine = FormatTimingLine(elapsed, p.CompletedTables, p.TotalTables, _compareEtaWindow);
         if (rowTotal is > 0 && rowCompared is { } rc2)
             timingLine += $" · compared {rc2:N0} rows from {rowTotal:N0} total";
         CompareTimingText = timingLine;
@@ -795,15 +827,21 @@ public partial class MainViewModel : ObservableObject
         return $"{t.Seconds}s";
     }
 
-    private static string FormatCompareTimingLine(TimeSpan elapsed, int completed, int total)
+    private static string FormatTimingLine(TimeSpan elapsed, int completed, int total, Queue<double> etaWindow)
     {
         var el = FormatShortTime(elapsed);
-        if (total <= 0 || completed >= total)
+        if (total <= 0 || completed >= total || completed <= 0)
             return $"Elapsed {el}";
-        if (completed <= 0)
+
+        // Require both enough elapsed time and at least 2 window samples before showing an ETA.
+        // This avoids confidently wrong estimates based on only 1–2 fast tables at the start.
+        if (elapsed.TotalSeconds < EtaMinElapsedSeconds || etaWindow.Count < 2)
             return $"Elapsed {el}";
-        var rate = elapsed.TotalSeconds / completed;
-        var remaining = TimeSpan.FromSeconds(rate * (total - completed));
+
+        // Use the sliding-window average (recent tables) rather than the global average so that
+        // a batch of fast tables at the start doesn't permanently skew the estimate downward.
+        var windowAvgSeconds = etaWindow.Average();
+        var remaining = TimeSpan.FromSeconds(windowAvgSeconds * (total - completed));
         return $"Elapsed {el} · ~{FormatShortTime(remaining)} left";
     }
 
@@ -818,12 +856,6 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             StatusMessage = $"Invalid project: {ex.Message}";
-            return;
-        }
-
-        if (project.Destination is not DatabaseEndpoint)
-        {
-            StatusMessage = "Sync requires a database destination (not an INSERT folder).";
             return;
         }
 
@@ -857,6 +889,9 @@ public partial class MainViewModel : ObservableObject
         CompareTimingText = "";
         StatusMessage = "Starting sync…";
         _syncStopwatch = Stopwatch.StartNew();
+        _syncEtaWindow.Clear();
+        _syncEtaLastTableIndex = 0;
+        _syncEtaLastElapsedSeconds = 0;
         var syncProgress = new Progress<SyncProgressInfo>(OnSyncProgress);
         try
         {
@@ -909,7 +944,26 @@ public partial class MainViewModel : ObservableObject
     private void OnSyncProgress(SyncProgressInfo p)
     {
         var elapsed = _syncStopwatch?.Elapsed ?? TimeSpan.Zero;
-        CompareTimingText = $"Elapsed {FormatShortTime(elapsed)}";
+
+        // Feed the sliding window on each TableCompleted event.
+        if (p.Phase == SyncProgressPhase.TableCompleted
+            && p.TableIndex > _syncEtaLastTableIndex
+            && elapsed.TotalSeconds > _syncEtaLastElapsedSeconds)
+        {
+            var deltaSec = elapsed.TotalSeconds - _syncEtaLastElapsedSeconds;
+            var deltaCount = p.TableIndex - _syncEtaLastTableIndex;
+            var secPerTable = deltaSec / deltaCount;
+            for (var n = 0; n < deltaCount; n++)
+            {
+                _syncEtaWindow.Enqueue(secPerTable);
+                if (_syncEtaWindow.Count > EtaWindowSize)
+                    _syncEtaWindow.Dequeue();
+            }
+            _syncEtaLastTableIndex = p.TableIndex;
+            _syncEtaLastElapsedSeconds = elapsed.TotalSeconds;
+        }
+
+        CompareTimingText = FormatTimingLine(elapsed, p.TableIndex, p.TablesTotal, _syncEtaWindow);
 
         switch (p.Phase)
         {
