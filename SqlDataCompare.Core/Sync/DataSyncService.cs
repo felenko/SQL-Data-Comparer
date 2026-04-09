@@ -581,12 +581,17 @@ public sealed class DataSyncService
         var nameComparer = project.Options.OrdinalIgnoreCase
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal;
+        var valueComparer = new ValueComparer(project.Options.OrdinalIgnoreCase, project.Options.TrimStrings);
 
         var results = new List<TableSyncResult>();
 
         await using var sourceSide = CompareSide.Create(project.Source, project.Options, isSource: true);
+        await using var destSide = CompareSide.Create(project.Destination, project.Options, isSource: false);
 
         var sourceTables = await sourceSide.ListTablesAsync(cancellationToken);
+        var destTables = await destSide.ListTablesAsync(cancellationToken);
+        var destSet = destTables.ToHashSet(TableRefComparer.Instance);
+
         var overrideIndex = BuildOverrideIndex(project.TableOverrides, nameComparer);
         var work = BuildWorklist(project, sourceTables, nameComparer, results);
 
@@ -595,12 +600,7 @@ public sealed class DataSyncService
         Directory.CreateDirectory(rootPath);
 
         var tablesTotal = work.Count;
-        progress?.Report(new SyncProgressInfo
-        {
-            Phase = SyncProgressPhase.Started,
-            TablesTotal = tablesTotal,
-            TableIndex = 0,
-        });
+        progress?.Report(new SyncProgressInfo { Phase = SyncProgressPhase.Started, TablesTotal = tablesTotal, TableIndex = 0 });
 
         var tableIndex = 0;
         foreach (var (srcTable, sel) in work)
@@ -621,7 +621,9 @@ public sealed class DataSyncService
                 continue;
             }
 
-            var destTable = new TableRef(
+            // Resolve dest table; fall back to same name even if folder file doesn't exist yet
+            var resolvedDest = ResolveDestTable(srcTable, ov, sel, destSet, nameComparer);
+            var destTable = resolvedDest ?? new TableRef(
                 sel?.DestSchema ?? ov?.DestSchema ?? srcTable.Schema,
                 sel?.DestTable ?? ov?.DestTable ?? srcTable.Name);
 
@@ -649,38 +651,21 @@ public sealed class DataSyncService
 
             try
             {
-                var srcSchema = await sourceSide.GetSchemaAsync(srcTable, ov, cancellationToken);
-                if (srcSchema is null)
-                    throw new InvalidOperationException("Could not load source table schema.");
-
-                var columns = srcSchema.Columns.Select(c => c.Name).ToList();
-                var keyColsForSort = srcSchema.PrimaryKeyColumns is { Count: > 0 }
-                    ? srcSchema.PrimaryKeyColumns.ToList()
-                    : columns.Take(1).ToList();
-
-                var where = project.Source is DatabaseEndpoint ? ov?.WhereClause : null;
-                var maxRows = ov?.MaxRows;
-
-                var srcRows = await sourceSide.LoadRowsAsync(
-                    srcTable, ov, columns, keyColsForSort, where, maxRows, cancellationToken);
-
-                var fileName = InsertFolderNaming.FileNameForTable(destTable, folderDest.FileNaming);
-                var filePath = Path.Combine(rootPath, fileName);
-
-                await WriteInsertFileAsync(filePath, destTable, columns, srcRows, dialect, cancellationToken);
-
-                results.Add(new TableSyncResult
-                {
-                    SourceTable = srcTable.Display,
-                    DestinationTable = destTable.Display,
-                    Status = SyncStatus.Success,
-                    Inserted = srcRows.Count,
-                });
-                logger.LogInformation("Exported {Count} rows from {Src} to {File}", srcRows.Count, srcTable.Display, fileName);
+                var syncResult = await CopyTableToFolderAsync(
+                    srcTable, destTable, ov,
+                    sourceSide, destSide,
+                    project.Source,
+                    nameComparer, valueComparer,
+                    dialect, rootPath, folderDest.FileNaming,
+                    syncOptions, logger,
+                    project.Options.SkipBinaryColumnsInCompare,
+                    tableIndex, tablesTotal, progress,
+                    cancellationToken);
+                results.Add(syncResult);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                logger.LogError(ex, "Failed exporting {Src} to folder", srcTable.Display);
+                logger.LogError(ex, "Failed copying {Src} to folder", srcTable.Display);
                 results.Add(new TableSyncResult
                 {
                     SourceTable = srcTable.Display,
@@ -700,44 +685,270 @@ public sealed class DataSyncService
             });
         }
 
-        progress?.Report(new SyncProgressInfo
-        {
-            Phase = SyncProgressPhase.Finished,
-            TablesTotal = tablesTotal,
-            TableIndex = tablesTotal,
-        });
-
+        progress?.Report(new SyncProgressInfo { Phase = SyncProgressPhase.Finished, TablesTotal = tablesTotal, TableIndex = tablesTotal });
         return new ProjectSyncResult { Tables = results };
     }
 
-    private static async Task WriteInsertFileAsync(
-        string filePath,
-        TableRef table,
-        IReadOnlyList<string> columns,
-        IReadOnlyList<Dictionary<string, object?>> rows,
+    private static async Task<TableSyncResult> CopyTableToFolderAsync(
+        TableRef srcTable,
+        TableRef destTable,
+        TableOverride? ov,
+        CompareSide sourceSide,
+        CompareSide destSide,
+        DataEndpoint srcEndpoint,
+        StringComparer nameComparer,
+        ValueComparer valueComparer,
         InsertSqlDialect dialect,
-        CancellationToken cancellationToken)
+        string rootPath,
+        string fileNaming,
+        SyncOptions opts,
+        ILogger logger,
+        bool skipBinaryColumns,
+        int tableIndex,
+        int tablesTotal,
+        IProgress<SyncProgressInfo>? progress,
+        CancellationToken ct)
     {
-        if (rows.Count == 0)
+        progress?.Report(new SyncProgressInfo
         {
-            await File.WriteAllTextAsync(filePath, "", cancellationToken);
-            return;
-        }
+            Phase = SyncProgressPhase.LoadingRows,
+            TablesTotal = tablesTotal,
+            TableIndex = tableIndex,
+            SourceTable = srcTable.Display,
+            DestinationTable = destTable.Display,
+        });
 
-        var quotedTable = SyncSqlBuilder.QuoteTableForDialect(table, dialect);
-        var quotedCols = string.Join(", ", columns.Select(c => SyncSqlBuilder.QuoteColumnForDialect(c, dialect)));
+        var srcSchema = await sourceSide.GetSchemaAsync(srcTable, ov, ct);
+        if (srcSchema is null)
+            throw new InvalidOperationException("Could not load source table schema.");
 
-        await using var writer = new StreamWriter(filePath, append: false);
-        foreach (var row in rows)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var values = string.Join(", ", columns.Select(c =>
+        var dstSchema = await destSide.GetSchemaAsync(destTable, ov, ct);
+        // Folder file doesn't exist yet — mirror source schema so key mapping works
+        if (dstSchema is null || dstSchema.Columns.Count == 0)
+            dstSchema = srcSchema;
+
+        var keys = PrimaryKeyResolver.Resolve(srcSchema, ov, nameComparer);
+        if (keys.KeyColumns.Count == 0 || keys.Confidence == KeyConfidence.Ambiguous)
+            return new TableSyncResult
             {
-                row.TryGetValue(c, out var v);
-                return SyncSqlBuilder.FormatLiteralValue(v, dialect);
-            }));
-            await writer.WriteLineAsync($"INSERT INTO {quotedTable} ({quotedCols}) VALUES ({values});");
+                SourceTable = srcTable.Display,
+                DestinationTable = destTable.Display,
+                Status = SyncStatus.Skipped,
+                ErrorMessage = keys.Detail ?? "Key columns could not be resolved.",
+            };
+
+        var destKeyColumns = MapSourceKeysToDestination(keys.KeyColumns, dstSchema, ov?.ColumnMap, nameComparer);
+        if (destKeyColumns is null)
+            throw new InvalidOperationException("Could not map key columns to destination.");
+
+        var valuePairs = CompareColumnPairBuilder.BuildValueColumnPairs(
+            srcSchema, dstSchema, ov, keys.KeyColumns, nameComparer, skipBinaryColumns);
+
+        var where = srcEndpoint is DatabaseEndpoint ? ov?.WhereClause : null;
+        var srcProject = keys.KeyColumns.Concat(valuePairs.Select(p => p.SourceColumn)).Distinct(StringComparer.Ordinal).ToList();
+        var dstProject = destKeyColumns.Concat(valuePairs.Select(p => p.DestinationColumn)).Distinct(StringComparer.Ordinal).ToList();
+
+        var srcTask = sourceSide.LoadRowsAsync(srcTable, ov, srcProject, keys.KeyColumns, where, ov?.MaxRows, ct);
+        var dstTask = destSide.LoadRowsAsync(destTable, ov, dstProject, destKeyColumns, null, ov?.MaxRows, ct);
+        await Task.WhenAll(srcTask, dstTask);
+        var srcRows = await srcTask;
+        var dstRows = await dstTask;
+
+        var srcSorted = RowMergeComparer.EnsureSortedByKeyString(srcRows, keys.KeyColumns, ct);
+        var dstSorted = RowMergeComparer.EnsureSortedByKeyString(dstRows, destKeyColumns, ct);
+
+        var lines = new List<string>();
+        long inserted = 0, updated = 0, deleted = 0;
+        int i = 0, j = 0;
+
+        while (i < srcSorted.Count && j < dstSorted.Count)
+        {
+            ct.ThrowIfCancellationRequested();
+            var ks = KeyString(srcSorted[i], keys.KeyColumns);
+            var kd = KeyString(dstSorted[j], destKeyColumns);
+            var cmp = string.CompareOrdinal(ks, kd);
+
+            if (cmp < 0)
+            {
+                if (opts.InsertMissing &&
+                    IsRowIncluded(opts.Selection, srcTable.Display, RowDifferenceKind.MissingInDestination, ks))
+                {
+                    lines.Add(BuildLiteralInsert(srcSorted[i], destTable, keys.KeyColumns, destKeyColumns, valuePairs, dstSchema, dialect));
+                    inserted++;
+                }
+                i++;
+            }
+            else if (cmp > 0)
+            {
+                if (opts.DeleteExtra &&
+                    IsRowIncluded(opts.Selection, srcTable.Display, RowDifferenceKind.MissingInSource, kd))
+                {
+                    lines.Add(BuildLiteralDelete(dstSorted[j], destTable, destKeyColumns, dialect));
+                    deleted++;
+                }
+                j++;
+            }
+            else
+            {
+                if (opts.UpdateChanged)
+                {
+                    var hasDiff = valuePairs.Any(p =>
+                    {
+                        srcSorted[i].TryGetValue(p.SourceColumn, out var va);
+                        dstSorted[j].TryGetValue(p.DestinationColumn, out var vb);
+                        return !valueComparer.Equal(va, vb);
+                    });
+                    if (hasDiff &&
+                        IsRowIncluded(opts.Selection, srcTable.Display, RowDifferenceKind.ValueMismatch, ks))
+                    {
+                        lines.Add(BuildLiteralUpdate(srcSorted[i], destTable, keys.KeyColumns, destKeyColumns, valuePairs, dstSchema, dialect));
+                        updated++;
+                    }
+                }
+                i++;
+                j++;
+            }
         }
+
+        while (i < srcSorted.Count)
+        {
+            ct.ThrowIfCancellationRequested();
+            var ksTail = KeyString(srcSorted[i], keys.KeyColumns);
+            if (opts.InsertMissing &&
+                IsRowIncluded(opts.Selection, srcTable.Display, RowDifferenceKind.MissingInDestination, ksTail))
+            {
+                lines.Add(BuildLiteralInsert(srcSorted[i], destTable, keys.KeyColumns, destKeyColumns, valuePairs, dstSchema, dialect));
+                inserted++;
+            }
+            i++;
+        }
+
+        while (j < dstSorted.Count)
+        {
+            ct.ThrowIfCancellationRequested();
+            var kdTail = KeyString(dstSorted[j], destKeyColumns);
+            if (opts.DeleteExtra &&
+                IsRowIncluded(opts.Selection, srcTable.Display, RowDifferenceKind.MissingInSource, kdTail))
+            {
+                lines.Add(BuildLiteralDelete(dstSorted[j], destTable, destKeyColumns, dialect));
+                deleted++;
+            }
+            j++;
+        }
+
+        progress?.Report(new SyncProgressInfo
+        {
+            Phase = SyncProgressPhase.ExecutingBatch,
+            TablesTotal = tablesTotal,
+            TableIndex = tableIndex,
+            SourceTable = srcTable.Display,
+            DestinationTable = destTable.Display,
+            CompletedStatements = 0,
+            TotalStatements = lines.Count,
+        });
+
+        if (lines.Count > 0)
+        {
+            var fileName = InsertFolderNaming.FileNameForTable(destTable, fileNaming);
+            var filePath = Path.Combine(rootPath, fileName);
+            await File.WriteAllLinesAsync(filePath, lines, ct);
+            logger.LogInformation(
+                "Wrote {Count} statement(s) to {File} (inserts={I}, updates={U}, deletes={D})",
+                lines.Count, fileName, inserted, updated, deleted);
+        }
+
+        progress?.Report(new SyncProgressInfo
+        {
+            Phase = SyncProgressPhase.ExecutingBatch,
+            TablesTotal = tablesTotal,
+            TableIndex = tableIndex,
+            SourceTable = srcTable.Display,
+            DestinationTable = destTable.Display,
+            CompletedStatements = lines.Count,
+            TotalStatements = lines.Count,
+        });
+
+        return new TableSyncResult
+        {
+            SourceTable = srcTable.Display,
+            DestinationTable = destTable.Display,
+            Status = SyncStatus.Success,
+            Inserted = inserted,
+            Updated = updated,
+            Deleted = deleted,
+        };
+    }
+
+    private static string BuildLiteralInsert(
+        Dictionary<string, object?> srcRow,
+        TableRef destTable,
+        IReadOnlyList<string> srcKeyColumns,
+        IReadOnlyList<string> destKeyColumns,
+        IReadOnlyList<(string SourceColumn, string DestinationColumn)> valuePairs,
+        TableSchema dstSchema,
+        InsertSqlDialect dialect)
+    {
+        var values = new List<(string DestCol, object? Value)>();
+        for (var k = 0; k < srcKeyColumns.Count; k++)
+        {
+            srcRow.TryGetValue(srcKeyColumns[k], out var v);
+            values.Add((destKeyColumns[k], v));
+        }
+        var destKeySet = new HashSet<string>(destKeyColumns, StringComparer.OrdinalIgnoreCase);
+        foreach (var (sc, dc) in valuePairs)
+        {
+            if (destKeySet.Contains(dc)) continue;
+            var col = dstSchema.Columns.FirstOrDefault(c => string.Equals(c.Name, dc, StringComparison.OrdinalIgnoreCase));
+            if (col?.IsIdentity == true) continue;
+            srcRow.TryGetValue(sc, out var val);
+            values.Add((dc, val));
+        }
+        var qt = SyncSqlBuilder.QuoteTableForDialect(destTable, dialect);
+        var cols = string.Join(", ", values.Select(v => SyncSqlBuilder.QuoteColumnForDialect(v.DestCol, dialect)));
+        var vals = string.Join(", ", values.Select(v => SyncSqlBuilder.FormatLiteralValue(v.Value, dialect)));
+        return $"INSERT INTO {qt} ({cols}) VALUES ({vals});";
+    }
+
+    private static string BuildLiteralUpdate(
+        Dictionary<string, object?> srcRow,
+        TableRef destTable,
+        IReadOnlyList<string> srcKeyColumns,
+        IReadOnlyList<string> destKeyColumns,
+        IReadOnlyList<(string SourceColumn, string DestinationColumn)> valuePairs,
+        TableSchema dstSchema,
+        InsertSqlDialect dialect)
+    {
+        var setParts = new List<string>();
+        foreach (var (sc, dc) in valuePairs)
+        {
+            srcRow.TryGetValue(sc, out var val);
+            var col = dstSchema.Columns.FirstOrDefault(c => string.Equals(c.Name, dc, StringComparison.OrdinalIgnoreCase));
+            if (SyncBinaryColumnGuard.ShouldOmitValue(col?.PhysicalType, val)) continue;
+            setParts.Add($"{SyncSqlBuilder.QuoteColumnForDialect(dc, dialect)} = {SyncSqlBuilder.FormatLiteralValue(val, dialect)}");
+        }
+        var whereParts = new List<string>();
+        for (var k = 0; k < srcKeyColumns.Count; k++)
+        {
+            srcRow.TryGetValue(srcKeyColumns[k], out var v);
+            whereParts.Add($"{SyncSqlBuilder.QuoteColumnForDialect(destKeyColumns[k], dialect)} = {SyncSqlBuilder.FormatLiteralValue(v, dialect)}");
+        }
+        var qt = SyncSqlBuilder.QuoteTableForDialect(destTable, dialect);
+        return $"UPDATE {qt} SET {string.Join(", ", setParts)} WHERE {string.Join(" AND ", whereParts)};";
+    }
+
+    private static string BuildLiteralDelete(
+        Dictionary<string, object?> dstRow,
+        TableRef destTable,
+        IReadOnlyList<string> destKeyColumns,
+        InsertSqlDialect dialect)
+    {
+        var whereParts = destKeyColumns.Select(k =>
+        {
+            dstRow.TryGetValue(k, out var v);
+            return $"{SyncSqlBuilder.QuoteColumnForDialect(k, dialect)} = {SyncSqlBuilder.FormatLiteralValue(v, dialect)}";
+        });
+        var qt = SyncSqlBuilder.QuoteTableForDialect(destTable, dialect);
+        return $"DELETE FROM {qt} WHERE {string.Join(" AND ", whereParts)};";
     }
 
     // --- helpers copied from DataCompareService ---
