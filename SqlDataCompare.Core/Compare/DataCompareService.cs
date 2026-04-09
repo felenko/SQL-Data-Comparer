@@ -155,21 +155,30 @@ public sealed class DataCompareService
             var dstTable = ResolveDestTable(srcTable, ov, sel, destSet, nameComparer);
             if (dstTable is null)
             {
-                var skipUnmapped = new TablePairCompareResult
+                if (destSide is InsertFolderCompareSide)
                 {
-                    SourceTable = srcTable.Display,
-                    DestinationTable = "(unmapped)",
-                    Status = TableCompareStatus.Skipped,
-                    ErrorMessage = "No matching destination table (add a table override or align names).",
-                };
-                results.Add(skipUnmapped);
-                progress?.Report(new CompareProgressInfo
+                    // INSERT file doesn't exist yet — treat as an empty destination.
+                    // The compare will report every source row as MissingInDestination.
+                    dstTable = srcTable;
+                }
+                else
                 {
-                    CompletedTables = results.Count,
-                    TotalTables = totalExpected,
-                    LatestTable = skipUnmapped,
-                });
-                continue;
+                    var skipUnmapped = new TablePairCompareResult
+                    {
+                        SourceTable = srcTable.Display,
+                        DestinationTable = "(unmapped)",
+                        Status = TableCompareStatus.Skipped,
+                        ErrorMessage = "No matching destination table (add a table override or align names).",
+                    };
+                    results.Add(skipUnmapped);
+                    progress?.Report(new CompareProgressInfo
+                    {
+                        CompletedTables = results.Count,
+                        TotalTables = totalExpected,
+                        LatestTable = skipUnmapped,
+                    });
+                    continue;
+                }
             }
 
             if (ov?.WhereClause is not null && !WhereClauseValidator.IsPermitted(ov.WhereClause))
@@ -211,6 +220,12 @@ public sealed class DataCompareService
                 });
                 continue;
             }
+
+            // If destination is an INSERT folder and the file doesn't exist yet, the schema
+            // has no columns. Mirror the source schema so key-mapping and column-pair building
+            // work; every source row will then appear as MissingInDestination.
+            if (destSide is InsertFolderCompareSide && dstSchema.Columns.Count == 0)
+                dstSchema = srcSchema;
 
             var keys = PrimaryKeyResolver.Resolve(srcSchema, ov, nameComparer);
             if (keys.KeyColumns.Count == 0 || keys.Confidence == KeyConfidence.Ambiguous)
@@ -664,8 +679,23 @@ internal sealed class InsertFolderCompareSide : CompareSide
 
     public override Task<TableSchema?> GetSchemaAsync(TableRef table, TableOverride? ov, CancellationToken cancellationToken)
     {
-        var schema = _folder.BuildSchemaFromInserts(table);
-        return Task.FromResult<TableSchema?>(schema);
+        try
+        {
+            var schema = _folder.BuildSchemaFromInserts(table);
+            return Task.FromResult<TableSchema?>(schema);
+        }
+        catch (FileNotFoundException)
+        {
+            // File doesn't exist yet (empty folder). Return an empty-column schema so the
+            // caller can detect this and mirror the source schema, resulting in all source
+            // rows appearing as MissingInDestination.
+            return Task.FromResult<TableSchema?>(new TableSchema
+            {
+                Table = table,
+                Columns = Array.Empty<ColumnDefinition>(),
+                PrimaryKeyColumns = Array.Empty<string>(),
+            });
+        }
     }
 
     public override Task<List<Dictionary<string, object?>>> LoadRowsAsync(
@@ -679,19 +709,24 @@ internal sealed class InsertFolderCompareSide : CompareSide
     {
         _ = whereClause;
         cancellationToken.ThrowIfCancellationRequested();
-        var all = _folder.LoadAllRows(table, ov?.InsertFilePath, maxRows,
-            projectedColumns);
-        var projected = all.Select(row =>
+        try
         {
-            var d = new Dictionary<string, object?>(StringComparer.Ordinal);
-            foreach (var c in projectedColumns)
+            var all = _folder.LoadAllRows(table, ov?.InsertFilePath, maxRows, projectedColumns);
+            var projected = all.Select(row =>
             {
-                row.TryGetValue(c, out var v);
-                d[c] = v;
-            }
-
-            return d;
-        }).ToList();
-        return Task.FromResult(projected);
+                var d = new Dictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var c in projectedColumns)
+                {
+                    row.TryGetValue(c, out var v);
+                    d[c] = v;
+                }
+                return d;
+            }).ToList();
+            return Task.FromResult(projected);
+        }
+        catch (FileNotFoundException)
+        {
+            return Task.FromResult(new List<Dictionary<string, object?>>());
+        }
     }
 }

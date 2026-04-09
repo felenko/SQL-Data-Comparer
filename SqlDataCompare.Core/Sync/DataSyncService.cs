@@ -3,6 +3,7 @@ using SqlDataCompare.Compare;
 using SqlDataCompare.DataSources;
 using SqlDataCompare.Project;
 using SqlDataCompare.Schema;
+using SqlDataCompare.Sql;
 
 namespace SqlDataCompare.Sync;
 
@@ -25,8 +26,11 @@ public sealed class DataSyncService
         project.TablesToCompare ??= [];
         project.TableOverrides ??= [];
 
+        if (project.Destination is InsertFolderEndpoint folderDest)
+            return await SyncToFolderAsync(project, folderDest, syncOptions, logger, cancellationToken, progress);
+
         if (project.Destination is not DatabaseEndpoint destDbEndpoint)
-            throw new InvalidOperationException("Sync only supports database destinations, not INSERT folder endpoints.");
+            throw new InvalidOperationException("Unsupported destination endpoint type.");
 
         var nameComparer = project.Options.OrdinalIgnoreCase
             ? StringComparer.OrdinalIgnoreCase
@@ -562,6 +566,178 @@ public sealed class DataSyncService
         if (set.Count == 0)
             return false;
         return set.Contains(SyncSelection.FormatRowKey(kind, keyDisplay));
+    }
+
+    // --- folder (INSERT file) sync ---
+
+    private static async Task<ProjectSyncResult> SyncToFolderAsync(
+        CompareProject project,
+        InsertFolderEndpoint folderDest,
+        SyncOptions syncOptions,
+        ILogger logger,
+        CancellationToken cancellationToken,
+        IProgress<SyncProgressInfo>? progress)
+    {
+        var nameComparer = project.Options.OrdinalIgnoreCase
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
+        var results = new List<TableSyncResult>();
+
+        await using var sourceSide = CompareSide.Create(project.Source, project.Options, isSource: true);
+
+        var sourceTables = await sourceSide.ListTablesAsync(cancellationToken);
+        var overrideIndex = BuildOverrideIndex(project.TableOverrides, nameComparer);
+        var work = BuildWorklist(project, sourceTables, nameComparer, results);
+
+        var dialect = InsertSqlDialectParser.Parse(folderDest.SqlDialect);
+        var rootPath = Path.GetFullPath(folderDest.RootPath);
+        Directory.CreateDirectory(rootPath);
+
+        var tablesTotal = work.Count;
+        progress?.Report(new SyncProgressInfo
+        {
+            Phase = SyncProgressPhase.Started,
+            TablesTotal = tablesTotal,
+            TableIndex = 0,
+        });
+
+        var tableIndex = 0;
+        foreach (var (srcTable, sel) in work)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            tableIndex++;
+            var ov = FindOverride(overrideIndex, srcTable);
+
+            if (ov?.SkipCompare == true)
+            {
+                results.Add(new TableSyncResult
+                {
+                    SourceTable = srcTable.Display,
+                    DestinationTable = "(skipped)",
+                    Status = SyncStatus.Skipped,
+                    ErrorMessage = "Skipped at setup (table override).",
+                });
+                continue;
+            }
+
+            var destTable = new TableRef(
+                sel?.DestSchema ?? ov?.DestSchema ?? srcTable.Schema,
+                sel?.DestTable ?? ov?.DestTable ?? srcTable.Name);
+
+            if (syncOptions.Selection?.IncludedSourceTables is { Count: > 0 } included &&
+                !included.Contains(srcTable.Display))
+            {
+                results.Add(new TableSyncResult
+                {
+                    SourceTable = srcTable.Display,
+                    DestinationTable = destTable.Display,
+                    Status = SyncStatus.Skipped,
+                    ErrorMessage = "Table not selected for sync.",
+                });
+                continue;
+            }
+
+            progress?.Report(new SyncProgressInfo
+            {
+                Phase = SyncProgressPhase.TableStarting,
+                TablesTotal = tablesTotal,
+                TableIndex = tableIndex,
+                SourceTable = srcTable.Display,
+                DestinationTable = destTable.Display,
+            });
+
+            try
+            {
+                var srcSchema = await sourceSide.GetSchemaAsync(srcTable, ov, cancellationToken);
+                if (srcSchema is null)
+                    throw new InvalidOperationException("Could not load source table schema.");
+
+                var columns = srcSchema.Columns.Select(c => c.Name).ToList();
+                var keyColsForSort = srcSchema.PrimaryKeyColumns is { Count: > 0 }
+                    ? srcSchema.PrimaryKeyColumns.ToList()
+                    : columns.Take(1).ToList();
+
+                var where = project.Source is DatabaseEndpoint ? ov?.WhereClause : null;
+                var maxRows = ov?.MaxRows;
+
+                var srcRows = await sourceSide.LoadRowsAsync(
+                    srcTable, ov, columns, keyColsForSort, where, maxRows, cancellationToken);
+
+                var fileName = InsertFolderNaming.FileNameForTable(destTable, folderDest.FileNaming);
+                var filePath = Path.Combine(rootPath, fileName);
+
+                await WriteInsertFileAsync(filePath, destTable, columns, srcRows, dialect, cancellationToken);
+
+                results.Add(new TableSyncResult
+                {
+                    SourceTable = srcTable.Display,
+                    DestinationTable = destTable.Display,
+                    Status = SyncStatus.Success,
+                    Inserted = srcRows.Count,
+                });
+                logger.LogInformation("Exported {Count} rows from {Src} to {File}", srcRows.Count, srcTable.Display, fileName);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "Failed exporting {Src} to folder", srcTable.Display);
+                results.Add(new TableSyncResult
+                {
+                    SourceTable = srcTable.Display,
+                    DestinationTable = destTable.Display,
+                    Status = SyncStatus.Error,
+                    ErrorMessage = ex.Message,
+                });
+            }
+
+            progress?.Report(new SyncProgressInfo
+            {
+                Phase = SyncProgressPhase.TableCompleted,
+                TablesTotal = tablesTotal,
+                TableIndex = tableIndex,
+                SourceTable = srcTable.Display,
+                DestinationTable = destTable.Display,
+            });
+        }
+
+        progress?.Report(new SyncProgressInfo
+        {
+            Phase = SyncProgressPhase.Finished,
+            TablesTotal = tablesTotal,
+            TableIndex = tablesTotal,
+        });
+
+        return new ProjectSyncResult { Tables = results };
+    }
+
+    private static async Task WriteInsertFileAsync(
+        string filePath,
+        TableRef table,
+        IReadOnlyList<string> columns,
+        IReadOnlyList<Dictionary<string, object?>> rows,
+        InsertSqlDialect dialect,
+        CancellationToken cancellationToken)
+    {
+        if (rows.Count == 0)
+        {
+            await File.WriteAllTextAsync(filePath, "", cancellationToken);
+            return;
+        }
+
+        var quotedTable = SyncSqlBuilder.QuoteTableForDialect(table, dialect);
+        var quotedCols = string.Join(", ", columns.Select(c => SyncSqlBuilder.QuoteColumnForDialect(c, dialect)));
+
+        await using var writer = new StreamWriter(filePath, append: false);
+        foreach (var row in rows)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var values = string.Join(", ", columns.Select(c =>
+            {
+                row.TryGetValue(c, out var v);
+                return SyncSqlBuilder.FormatLiteralValue(v, dialect);
+            }));
+            await writer.WriteLineAsync($"INSERT INTO {quotedTable} ({quotedCols}) VALUES ({values});");
+        }
     }
 
     // --- helpers copied from DataCompareService ---

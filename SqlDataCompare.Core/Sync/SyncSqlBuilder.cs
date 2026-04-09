@@ -1,5 +1,7 @@
+using System.Globalization;
 using SqlDataCompare.DataSources;
 using SqlDataCompare.Schema;
+using SqlDataCompare.Sql;
 
 namespace SqlDataCompare.Sync;
 
@@ -93,6 +95,48 @@ internal static class SyncSqlBuilder
             ),
             _ => throw new ArgumentOutOfRangeException(nameof(provider)),
         };
+
+    /// <summary>Quotes a table identifier using the INSERT folder's SQL dialect.</summary>
+    public static string QuoteTableForDialect(TableRef table, InsertSqlDialect dialect) => dialect switch
+    {
+        InsertSqlDialect.SqlServer => SqlIdentifier.SqlServerQuoteTable(table),
+        InsertSqlDialect.PostgreSql => SqlIdentifier.PostgresQuoteTable(table),
+        InsertSqlDialect.MySql => SqlIdentifier.MySqlQuoteTable(table),
+        _ => throw new ArgumentOutOfRangeException(nameof(dialect)),
+    };
+
+    /// <summary>Quotes a column identifier using the INSERT folder's SQL dialect.</summary>
+    public static string QuoteColumnForDialect(string column, InsertSqlDialect dialect) => dialect switch
+    {
+        InsertSqlDialect.SqlServer => SqlIdentifier.SqlServerQuoteColumn(column),
+        InsertSqlDialect.PostgreSql => SqlIdentifier.PostgresQuoteColumn(column),
+        InsertSqlDialect.MySql => SqlIdentifier.MySqlQuoteColumn(column),
+        _ => throw new ArgumentOutOfRangeException(nameof(dialect)),
+    };
+
+    /// <summary>
+    /// Formats a CLR value as a SQL literal suitable for writing to an INSERT SQL file.
+    /// </summary>
+    public static string FormatLiteralValue(object? value, InsertSqlDialect dialect)
+    {
+        if (value is null) return "NULL";
+        if (value is string s) return $"'{s.Replace("'", "''")}'";
+        if (value is bool b) return dialect == InsertSqlDialect.PostgreSql ? (b ? "TRUE" : "FALSE") : (b ? "1" : "0");
+        if (value is byte or sbyte or short or ushort or int or uint or long or ulong) return value.ToString()!;
+        if (value is decimal d) return d.ToString(CultureInfo.InvariantCulture);
+        if (value is float f) return f.ToString(CultureInfo.InvariantCulture);
+        if (value is double dbl) return dbl.ToString(CultureInfo.InvariantCulture);
+        if (value is DateTime dt) return $"'{dt:yyyy-MM-ddTHH:mm:ss.fff}'";
+        if (value is DateTimeOffset dto) return $"'{dto:yyyy-MM-ddTHH:mm:ss.fffzzz}'";
+        if (value is Guid g) return $"'{g}'";
+        if (value is byte[] bytes)
+        {
+            var hex = Convert.ToHexString(bytes);
+            return dialect == InsertSqlDialect.PostgreSql ? $"'\\x{hex}'" : $"0x{hex}";
+        }
+        var str = value.ToString() ?? "";
+        return $"'{str.Replace("'", "''")}'";
+    }
 
     private static (Func<TableRef, string> QTable, Func<string, string> QCol, Func<int, string> PRef)
         Dialect(string provider)
