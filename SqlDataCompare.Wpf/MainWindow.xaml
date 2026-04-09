@@ -47,35 +47,63 @@
                 <!-- Menu + quick toolbar -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
                     <Menu shell:WindowChrome.IsHitTestVisibleInChrome="True"
-                          Background="Transparent" BorderThickness="0">
+                          BorderThickness="0">
                         <Menu.Resources>
-                            <SolidColorBrush x:Key="{x:Static SystemColors.MenuColorKey}" Color="#252B36"/>
-                            <SolidColorBrush x:Key="{x:Static SystemColors.MenuBarColorKey}" Color="#232A38"/>
-                            <SolidColorBrush x:Key="{x:Static SystemColors.MenuTextBrushKey}" Color="#D8DCE8"/>
-                            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#374F78"/>
-                            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#D8DCE8"/>
-                            <Style TargetType="MenuItem">
-                                <Setter Property="BorderThickness" Value="0"/>
-                                <Setter Property="Background" Value="Transparent"/>
-                            </Style>
+                            <Style TargetType="Separator" BasedOn="{StaticResource MenuSeparatorStyle}"/>
                         </Menu.Resources>
-                        <MenuItem Header="_File"
-                                  Foreground="{StaticResource TextSecondaryBrush}"
-                                  Background="Transparent">
-                            <MenuItem Header="_New"      Command="{Binding NewProjectCommand}"/>
-                            <MenuItem Header="_Open…"    Command="{Binding OpenProjectCommand}"/>
-                            <MenuItem Header="_Save"     Command="{Binding SaveProjectCommand}"/>
-                            <MenuItem Header="Save _As…" Command="{Binding SaveProjectAsCommand}"/>
+                        <MenuItem Header="_File">
+                            <MenuItem Header="_New"      Command="{Binding NewProjectCommand}">
+                                <MenuItem.Icon>
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE160;" FontSize="14"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="_Open…"    Command="{Binding OpenProjectCommand}">
+                                <MenuItem.Icon>
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8E5;" FontSize="14"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="_Save"     Command="{Binding SaveProjectCommand}">
+                                <MenuItem.Icon>
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74E;" FontSize="14"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="Save _As…" Command="{Binding SaveProjectAsCommand}">
+                                <MenuItem.Icon>
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C8;" FontSize="14"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
                             <Separator/>
-                            <MenuItem Header="E_xit" Click="Exit_Click"/>
+                            <MenuItem Header="E_xit" Click="Exit_Click">
+                                <MenuItem.Icon>
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE7E8;" FontSize="14"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
                         </MenuItem>
-                        <MenuItem Header="_Compare"
-                                  Foreground="{StaticResource TextSecondaryBrush}"
-                                  Background="Transparent">
-                            <MenuItem Header="_Run Compare"          Command="{Binding RunCompareCommand}" FontWeight="SemiBold"/>
-                            <MenuItem Header="_Stop Compare"         Command="{Binding CancelCompareCommand}"/>
+                        <MenuItem Header="_Compare">
+                            <MenuItem Header="_Run Compare" Command="{Binding RunCompareCommand}" FontWeight="SemiBold">
+                                <MenuItem.Icon>
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE768;" FontSize="14"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="_Stop Compare" Command="{Binding CancelCompareCommand}">
+                                <MenuItem.Icon>
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE71A;" FontSize="14"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
                             <Separator/>
-                            <MenuItem Header="_Sync to Destination…" Command="{Binding SyncToDestinationCommand}"/>
+                            <MenuItem Header="_Sync to Destination…" Command="{Binding SyncToDestinationCommand}">
+                                <MenuItem.Icon>
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE895;" FontSize="14"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
                         </MenuItem>
                     </Menu>
 

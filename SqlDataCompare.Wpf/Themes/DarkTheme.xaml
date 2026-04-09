@@ -438,19 +438,175 @@
          MENU
     ═══════════════════════════════════════════════ -->
     <Style TargetType="Menu">
-        <Setter Property="Background"       Value="Transparent"/>
+        <Setter Property="Background"       Value="{StaticResource PanelHeaderBrush}"/>
         <Setter Property="Foreground"       Value="{StaticResource TextPrimaryBrush}"/>
         <Setter Property="FontSize"         Value="13"/>
         <Setter Property="FontFamily"       Value="Segoe UI"/>
         <Setter Property="BorderThickness"  Value="0"/>
-        <Setter Property="BorderBrush"      Value="{StaticResource SeparatorBrush}"/>
     </Style>
 
+    <!--
+        Full custom MenuItem template.
+        Key technique: AllowsTransparency="True" on the Popup so WPF stops asking
+        Windows to draw a system-chrome border around the dropdown; we draw our own
+        Border inside instead.
+    -->
     <Style TargetType="MenuItem">
-        <Setter Property="Foreground"   Value="{StaticResource TextPrimaryBrush}"/>
-        <Setter Property="Background"   Value="{StaticResource PanelHeaderBrush}"/>
-        <Setter Property="FontSize"     Value="13"/>
-        <Setter Property="FontFamily"   Value="Segoe UI"/>
+        <Setter Property="Foreground"  Value="{StaticResource TextPrimaryBrush}"/>
+        <Setter Property="Background"  Value="Transparent"/>
+        <Setter Property="FontSize"    Value="13"/>
+        <Setter Property="FontFamily"  Value="Segoe UI"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="MenuItem">
+                    <Grid SnapsToDevicePixels="True">
+
+                        <!-- Visible item background + content -->
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <!-- Icon / check-mark column (collapsed for top-level items) -->
+                                    <ColumnDefinition x:Name="IconCol" Width="0"/>
+                                    <!-- Header text -->
+                                    <ColumnDefinition Width="*"/>
+                                    <!-- Sub-menu expand arrow (collapsed unless SubmenuHeader) -->
+                                    <ColumnDefinition x:Name="ArrowCol" Width="0"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Icon column: shows the item icon; check mark overlays it when IsChecked -->
+                                <Grid Grid.Column="0"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center">
+                                    <ContentPresenter x:Name="Icon"
+                                                      Content="{TemplateBinding Icon}"
+                                                      HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center"/>
+                                    <Path x:Name="Check"
+                                          Visibility="Collapsed"
+                                          Data="M3,7 L6,10 L11,3"
+                                          Stroke="{StaticResource AccentHoverBrush}"
+                                          StrokeThickness="1.5"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"/>
+                                </Grid>
+
+                                <!-- Header -->
+                                <ContentPresenter x:Name="HeaderSite"
+                                                  Grid.Column="1"
+                                                  ContentSource="Header"
+                                                  RecognizesAccessKey="True"
+                                                  VerticalAlignment="Center"
+                                                  Margin="12,5"/>
+
+                                <!-- Right-pointing arrow for sub-menu headers -->
+                                <Path x:Name="Arrow"
+                                      Grid.Column="2"
+                                      Visibility="Collapsed"
+                                      Data="M0,0 L4,4 L0,8"
+                                      Stroke="{StaticResource TextSecondaryBrush}"
+                                      StrokeThickness="1.5"
+                                      Fill="Transparent"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      Margin="4,0,8,0"/>
+                            </Grid>
+                        </Border>
+
+                        <!--
+                            AllowsTransparency="True" — removes the system-drawn window
+                            border so only our Border below is visible.
+                            PopupAnimation="None" — avoids a white flash on first open.
+                        -->
+                        <Popup x:Name="PART_Popup"
+                               AllowsTransparency="True"
+                               Focusable="False"
+                               IsOpen="{TemplateBinding IsSubmenuOpen}"
+                               Placement="Bottom"
+                               PopupAnimation="None"
+                               HorizontalOffset="-1">
+                            <Border Background="{StaticResource PanelBrush}"
+                                    BorderBrush="{StaticResource SeparatorBrush}"
+                                    BorderThickness="1"
+                                    Padding="0,3"
+                                    SnapsToDevicePixels="True">
+                                <Border.Effect>
+                                    <DropShadowEffect Color="#000000" Opacity="0.45"
+                                                      BlurRadius="10" ShadowDepth="3"
+                                                      Direction="270"/>
+                                </Border.Effect>
+                                <ScrollViewer CanContentScroll="True"
+                                              HorizontalScrollBarVisibility="Hidden"
+                                              VerticalScrollBarVisibility="Auto">
+                                    <ItemsPresenter/>
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+
+                    <ControlTemplate.Triggers>
+
+                        <!-- Top-level items: no icon column, popup opens below -->
+                        <Trigger Property="Role" Value="TopLevelHeader">
+                            <Setter TargetName="HeaderSite"  Property="Margin"    Value="12,5"/>
+                            <Setter TargetName="PART_Popup"  Property="Placement" Value="Bottom"/>
+                        </Trigger>
+                        <Trigger Property="Role" Value="TopLevelItem">
+                            <Setter TargetName="HeaderSite" Property="Margin" Value="12,5"/>
+                        </Trigger>
+
+                        <!-- Sub-menu leaf: show icon column, popup to the right -->
+                        <Trigger Property="Role" Value="SubmenuItem">
+                            <Setter TargetName="IconCol"     Property="Width"     Value="22"/>
+                            <Setter TargetName="HeaderSite"  Property="Margin"    Value="4,5,14,5"/>
+                            <Setter TargetName="PART_Popup"  Property="Placement" Value="Right"/>
+                        </Trigger>
+
+                        <!-- Sub-menu header: show icon col + expand arrow -->
+                        <Trigger Property="Role" Value="SubmenuHeader">
+                            <Setter TargetName="IconCol"     Property="Width"     Value="22"/>
+                            <Setter TargetName="ArrowCol"    Property="Width"     Value="20"/>
+                            <Setter TargetName="Arrow"       Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="HeaderSite"  Property="Margin"    Value="4,5,0,5"/>
+                            <Setter TargetName="PART_Popup"  Property="Placement" Value="Right"/>
+                        </Trigger>
+
+                        <!-- Highlighted / submenu open -->
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsSubmenuOpen" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentBrush}"/>
+                        </Trigger>
+
+                        <!-- Checkable items -->
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+
+                        <!-- Disabled -->
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.4"/>
+                        </Trigger>
+
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Separator inside menus: a single 1-px dark line with small vertical padding -->
+    <Style x:Key="MenuSeparatorStyle" TargetType="Separator">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Separator">
+                    <Border Height="1"
+                            Background="{StaticResource SeparatorBrush}"
+                            Margin="4,3"/>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <!-- ═══════════════════════════════════════════════
