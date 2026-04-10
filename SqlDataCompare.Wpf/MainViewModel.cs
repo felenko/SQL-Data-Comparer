@@ -93,10 +93,39 @@ public partial class MainViewModel : ObservableObject
 
     private int _currentRowDiffIndex = -1;
 
+    public ObservableCollection<RecentProjectEntry> RecentProjects { get; } = new();
+
+    public bool HasRecentProjects => RecentProjects.Count > 0;
+
     public MainViewModel()
     {
         _filteredResultRows = CollectionViewSource.GetDefaultView(ResultRows);
         _filteredResultRows.Filter = CompareTableFilter;
+        LoadRecentProjects();
+    }
+
+    private void LoadRecentProjects()
+    {
+        RecentProjects.Clear();
+        foreach (var p in RecentProjectsService.Load())
+            RecentProjects.Add(new RecentProjectEntry(p));
+        OnPropertyChanged(nameof(HasRecentProjects));
+    }
+
+    private void PushRecentProject(string path)
+    {
+        var updated = RecentProjectsService.AddAndSave(RecentProjects.Select(e => e.Path), path);
+        RecentProjects.Clear();
+        foreach (var p in updated)
+            RecentProjects.Add(new RecentProjectEntry(p));
+        OnPropertyChanged(nameof(HasRecentProjects));
+    }
+
+    [RelayCommand]
+    private void OpenRecentProject(string path)
+    {
+        ProjectPath = path;
+        LoadFromPath(path);
     }
 
     [ObservableProperty] private string statusMessage =
@@ -362,6 +391,7 @@ public partial class MainViewModel : ObservableObject
         {
             var p = CompareProjectSerializer.Read(path);
             ApplyFromProject(p);
+            PushRecentProject(path);
             StatusMessage = $"Loaded '{Path.GetFileName(path)}'.";
         }
         catch (Exception ex)
@@ -441,6 +471,7 @@ public partial class MainViewModel : ObservableObject
         {
             var p = BuildCompareProject();
             CompareProjectSerializer.Write(path, p);
+            PushRecentProject(path);
             StatusMessage = $"Saved '{Path.GetFileName(path)}'.";
         }
         catch (Exception ex)

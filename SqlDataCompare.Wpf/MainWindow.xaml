@@ -64,6 +64,23 @@
                                                Foreground="{StaticResource TextSecondaryBrush}"/>
                                 </MenuItem.Icon>
                             </MenuItem>
+                            <MenuItem Header="Open _Recent"
+                                      ItemsSource="{Binding RecentProjects}"
+                                      IsEnabled="{Binding HasRecentProjects}">
+                                <MenuItem.Icon>
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE81C;" FontSize="14"
+                                               Foreground="{StaticResource TextSecondaryBrush}"/>
+                                </MenuItem.Icon>
+                                <MenuItem.ItemContainerStyle>
+                                    <Style TargetType="MenuItem" BasedOn="{StaticResource {x:Type MenuItem}}">
+                                        <Setter Property="Header" Value="{Binding DisplayName}"/>
+                                        <Setter Property="ToolTip" Value="{Binding Path}"/>
+                                        <Setter Property="Command" Value="{Binding DataContext.OpenRecentProjectCommand,
+                                                    RelativeSource={RelativeSource AncestorType=Menu}}"/>
+                                        <Setter Property="CommandParameter" Value="{Binding Path}"/>
+                                    </Style>
+                                </MenuItem.ItemContainerStyle>
+                            </MenuItem>
                             <MenuItem Header="_Save"     Command="{Binding SaveProjectCommand}">
                                 <MenuItem.Icon>
                                     <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74E;" FontSize="14"
